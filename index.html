@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Simulador Hídrico 3D</title>
+  <meta name="description" content="Simulador interactivo 3D del abastecimiento de agua y de un arroyo canalizado en Santa Marta: caudales, tuberías, tanque, presión en la vivienda y capacidad del canal en tiempo real.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3C16 3 6 14.5 6 20.5a10 10 0 0 0 20 0C26 14.5 16 3 16 3z' fill='%231C86B8'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;1,8..60,400;1,8..60,600&display=swap">
+  <link rel="stylesheet" href="css/styles.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./lib/three.module.min.js",
+        "three/addons/": "./lib/addons/"
+      }
+    }
+  </script>
+  <script src="lib/chart.umd.js" defer></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="barra">
+    <div class="marca">
+      <svg class="gota" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3C16 3 6 14.5 6 20.5a10 10 0 0 0 20 0C26 14.5 16 3 16 3z"/></svg>
+      <div>
+        <h1>Simulador hídrico 3D</h1>
+        <p>Abastecimiento y arroyos de Santa Marta</p>
+      </div>
+    </div>
+
+    <div class="estados" aria-live="polite">
+      <p class="estado" id="estadoAcueducto" data-nivel="ok"><span class="punto"></span><span class="texto">Calculando…</span></p>
+      <p class="estado" id="estadoArroyo" data-nivel="ok"><span class="punto"></span><span class="texto">Calculando…</span></p>
+    </div>
+
+    <div class="reloj" role="group" aria-label="Tiempo simulado">
+      <button type="button" id="btnPlay" class="boton" aria-pressed="true">Pausar</button>
+      <label class="sr" for="selVelocidad">Velocidad de la simulación</label>
+      <select id="selVelocidad" class="boton">
+        <option value="60">1 min por segundo</option>
+        <option value="600" selected>10 min por segundo</option>
+        <option value="3600">1 h por segundo</option>
+        <option value="21600">6 h por segundo</option>
+      </select>
+      <output id="reloj" class="hora">Día 1, 06:00</output>
+      <button type="button" id="btnReiniciar" class="boton">Reiniciar</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="escena" id="escena" aria-label="Vista 3D del sistema hídrico">
+      <p class="ayuda" id="ayuda">Arrastra para girar la vista y usa la rueda o dos dedos para acercar. Toca un componente para ver sus controles.</p>
+      <p class="leyenda">
+        <span class="muestra muestra-flujo"></span>Flujo de agua
+        <span class="muestra muestra-piezo"></span>Línea piezométrica
+        <span class="nota">Distancias horizontales comprimidas; cotas a escala ×0.6.</span>
+      </p>
+      <p class="sin-webgl" id="sinWebgl" hidden>Tu navegador no pudo iniciar la vista 3D (WebGL). Los cálculos y las gráficas siguen funcionando en el panel.</p>
+    </section>
+
+    <aside class="panel" aria-label="Controles y resultados">
+      <nav class="pestanas" role="tablist" id="pestanas"></nav>
+      <div id="fichas"></div>
+      <p class="pie">Proyecto de Álgebra y Geometría Analítica, 2026-II. Agua a 25 °C: ρ = 997.05 kg/m³, μ = 0.00089 Pa·s, g = 9.81 m/s².</p>
+    </aside>
+  </main>
+</body>
+</html>
