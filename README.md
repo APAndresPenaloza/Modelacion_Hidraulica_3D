@@ -56,4 +56,4 @@ npm test
 
 ## Valores de referencia
 
-La tarifa de energía (950 COP/kWh), el cargo fijo y la presión mínima de servicio (15 m.c.a.) son valores editables de referencia. Antes de la sustentación conviene contrastarlos con la tarifa vigente del operador de energía y con el Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017).
+La tarifa de energía (950 COP/kWh), el cargo fijo y la presión mínima de servicio (15 m.c.a.) son valores editables de referencia. Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017).
