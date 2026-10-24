@@ -23,8 +23,63 @@ const X_GRIFO = X_CASA - 1.8;
 const Z_CANAL = 21;
 const X_CANAL_INI = -22;
 const X_CANAL_FIN = 44;
-const PISO_CANAL = 6.0;
-const FOSA = { x0: 44.4, x1: 55, z0: Z_CANAL - 7.5, z1: Z_CANAL + 7.5, fondo: PISO_CANAL - 5.2 };
+// El arroyo va excavado bajo la llanura urbana: el borde del canal queda a ras
+// de la calle y el agua corre por debajo del nivel del terreno.
+const NIVEL_CALLE = 6.0;              // cota del terreno a lo largo del arroyo (escena)
+const CORONA = NIVEL_CALLE + 0.1;     // borde superior del canal (bordillo del andén)
+const BORDO_LIBRE = 0.3;              // altura libre sobre el tirante de diseño [m]
+const ESPESOR = 0.35;                 // espesor del revestimiento de concreto [m]
+const ANDEN = 2.2;                    // andén de concreto a cada lado del canal [m]
+const MURO_FOSA = 1.3;                // espesor de los muros del pozo de disipación
+const FOSA_X0 = X_CANAL_FIN;          // el canal descarga en el pozo
+const FOSA_X1 = 55;
+const X_COMPUERTA = X_CANAL_FIN - 1.4;
+
+// Excavación vigente (la define construirCanal según la sección)
+let CORTE = null;
+
+/** Recorta el terreno donde va el canal, su cabezal y el pozo de disipación. */
+function aplicarCorte(x, z, y) {
+  const c = CORTE;
+  const dz = Math.abs(z - Z_CANAL);
+  if (x < X_CANAL_INI - 4 || x > FOSA_X1 + MURO_FOSA + 2 || dz > c.W + 1.5) return y;
+  y = Math.min(y, NIVEL_CALLE);                       // explanación a nivel de la calle
+  if (dz < c.W - 1.05) {
+    if (x > X_CANAL_INI - 1.1 && x < FOSA_X0) y = Math.min(y, c.piso - ESPESOR - 0.4);
+    if (x > FOSA_X0 - 2.4 && x < FOSA_X1 + 0.25) y = Math.min(y, c.fondo - 0.6);
+  }
+  return y;
+}
+
+function dentroDelCanal(x, z) {
+  return CORTE && x > X_CANAL_INI - 2.4 && x < FOSA_X1 + MURO_FOSA && Math.abs(z - Z_CANAL) < CORTE.W;
+}
+
+/**
+ * Perfil en U: bloque de concreto de semiancho W con un hueco trapezoidal
+ * (fondo b en la cota piso, ancho Tc en la corona). u = coordenada transversal.
+ */
+function perfilCanal({ W, b, Tc, piso, base }) {
+  const s = new THREE.Shape();
+  s.moveTo(-W, CORONA);
+  s.lineTo(-Tc / 2, CORONA);
+  s.lineTo(-b / 2, piso);
+  s.lineTo(b / 2, piso);
+  s.lineTo(Tc / 2, CORONA);
+  s.lineTo(W, CORONA);
+  s.lineTo(W, base);
+  s.lineTo(-W, base);
+  s.closePath();
+  return s;
+}
+
+/** Extruye un perfil transversal a lo largo del eje x, desde x0 con longitud L. */
+function extruirEnX(forma, x0, L) {
+  const geo = new THREE.ExtrudeGeometry(forma, { depth: L, bevelEnabled: false });
+  geo.rotateY(Math.PI / 2); // z local (extrusión) → x del mundo; u → −z (perfil simétrico)
+  geo.translate(x0, 0, Z_CANAL);
+  return geo;
+}
 
 const COLOR = {
   cielo: 0xcfe2e8,
@@ -69,12 +124,10 @@ export function alturaTerreno(x, z) {
   const cauce = Math.exp(-(((x - X_RIO) / 7) ** 2));
   y += lejos * (1 - cauce) * (14 + 7 * Math.sin(x * 0.06 + 1.3) + 5 * Math.cos(x * 0.11 - z * 0.05));
   // Ondulación suave lejos de las estructuras
-  const banda = Math.max(suave(1 - Math.abs(z - Z_CANAL) / 10), 0.85 * suave(1 - Math.abs(z) / 6));
+  const banda = Math.max(suave(1 - Math.max(0, Math.abs(z - Z_CANAL) - 8) / 6), 0.85 * suave(1 - Math.abs(z) / 6));
   y += (1 - banda) * 0.45 * Math.sin(x * 0.31 + z * 0.17) * Math.cos(z * 0.23 - x * 0.05);
-  // Pozo de disipación al final del canal
-  if (x > FOSA.x0 - 0.6 && x < FOSA.x1 + 0.6 && z > FOSA.z0 - 0.6 && z < FOSA.z1 + 0.6) {
-    y = Math.min(y, FOSA.fondo);
-  }
+  // Excavación del arroyo canalizado y del pozo de disipación
+  if (CORTE) y = aplicarCorte(x, z, y);
   return y;
 }
 
@@ -285,7 +338,6 @@ export class Escena {
       canal: this.grupo('arroyo'),
     };
     this.construirBomba();
-    this.construirFosa();
 
     this.flujoAduccion = new FlujoTubo(this.scene);
     this.flujoDistribucion = new FlujoTubo(this.scene);
@@ -334,8 +386,19 @@ export class Escena {
     const geo = new THREE.PlaneGeometry(240, 190, 240, 190);
     geo.rotateX(-Math.PI / 2);
     geo.translate(5, 0, -5);
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 3), 3));
+    this.geoTerreno = geo;
+    this.pintarTerreno();
+    const malla = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }));
+    malla.receiveShadow = true;
+    this.scene.add(malla);
+  }
+
+  /** Recalcula alturas y colores del terreno (se repite cuando cambia la excavación del canal). */
+  pintarTerreno() {
+    const geo = this.geoTerreno;
     const pos = geo.attributes.position;
-    const colores = new Float32Array(pos.count * 3);
+    const colores = geo.attributes.color.array;
     const arena = new THREE.Color(0xdccca3);
     const seco = new THREE.Color(0xbcab78);
     const verde = new THREE.Color(0x8b9e64);
@@ -356,17 +419,16 @@ export class Escena {
       else c.copy(verdeOsc).lerp(roca, Math.min(1, (y - 28) / 10));
       const ciudad = suave((z - 10) / 6) * suave((x + 27) / 3) * (1 - suave((x - 56) / 3));
       if (ciudad > 0) c.lerp(urbano, ciudad * 0.75);
-      if (x > FOSA.x0 - 0.6 && x < FOSA.x1 + 0.6 && z > FOSA.z0 - 0.6 && z < FOSA.z1 + 0.6) c.copy(concreto);
+      if (dentroDelCanal(x, z)) c.copy(concreto);
       const ruido = 0.94 + 0.06 * Math.sin(x * 1.7 + z * 2.3) * Math.cos(x * 0.9 - z * 1.3);
       colores[i * 3] = c.r * ruido;
       colores[i * 3 + 1] = c.g * ruido;
       colores[i * 3 + 2] = c.b * ruido;
     }
-    geo.setAttribute('color', new THREE.BufferAttribute(colores, 3));
+    pos.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
     geo.computeVertexNormals();
-    const malla = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }));
-    malla.receiveShadow = true;
-    this.scene.add(malla);
+    geo.computeBoundingSphere();
   }
 
   aguas() {
@@ -625,49 +687,112 @@ export class Escena {
     this.indexar(g);
   }
 
-  // ── Arroyo canalizado ─────────────────────────────────────────────────
+  // ── Arroyo canalizado (sección trapezoidal excavada) ───────────────────
   construirCanal() {
     const g = this.grupos.canal;
     g.children.slice().forEach((o) => { g.remove(o); liberar(o); });
     const b = this.p.anchoCanal;
-    const yD = M.tiranteDesdePerimetro(this.p.perimetro, b);
-    const L = X_CANAL_FIN - X_CANAL_INI;
-    const xm = (X_CANAL_INI + X_CANAL_FIN) / 2;
-    const fondo = caja(L, 0.4, b + 0.7, COLOR.concreto);
-    fondo.position.set(xm, PISO_CANAL - 0.2, Z_CANAL);
-    g.add(fondo);
-    for (const s of [-1, 1]) {
-      const muro = caja(L, yD + 0.25, 0.3, COLOR.concreto);
-      muro.position.set(xm, PISO_CANAL + (yD + 0.25) / 2, Z_CANAL + s * (b / 2 + 0.15));
-      g.add(muro);
-    }
-    // Cabezal de entrada (alcantarilla)
-    const cabezal = caja(1.0, yD + 1.2, b + 2.4, COLOR.concretoOsc);
-    cabezal.position.set(X_CANAL_INI - 0.5, PISO_CANAL + (yD + 1.2) / 2, Z_CANAL);
-    const boca = caja(0.2, Math.max(0.3, yD * 0.8), b * 0.9, 0x24323a);
-    boca.position.set(X_CANAL_INI + 0.02, PISO_CANAL + Math.max(0.3, yD * 0.8) / 2, Z_CANAL);
+    const zt = this.p.taludCanal ?? 0;
+    const yD = M.tiranteDesdePerimetro(this.p.perimetro, b, zt);
+    const H = yD + BORDO_LIBRE;                    // profundidad total del canal
+    const piso = CORONA - H;                       // cota del fondo
+    const Tc = b + 2 * zt * H;                     // ancho en la corona
+    const W = Tc / 2 + ANDEN;                      // semiancho total con andenes
+    const hw = W - MURO_FOSA;                      // semiancho interior del pozo
+    const fondo = piso - 4.6;                      // fondo del pozo (caída máx. 4 m)
+    const L = FOSA_X0 - X_CANAL_INI;
+    const xm = (X_CANAL_INI + FOSA_X0) / 2;
+    const base = piso - ESPESOR;
+
+    // Excavación del terreno según la nueva sección
+    CORTE = { piso, fondo, W };
+    this.pintarTerreno();
+
+    const concreto = new THREE.MeshStandardMaterial({ color: COLOR.concreto, roughness: 0.88 });
+    const sombra = (m) => { m.castShadow = true; m.receiveShadow = true; return m; };
+
+    // Revestimiento de concreto: andenes + paredes inclinadas + losa de fondo
+    const canal = sombra(new THREE.Mesh(extruirEnX(perfilCanal({ W, b, Tc, piso, base }), X_CANAL_INI, L), concreto));
+    g.add(canal);
+
+    // Cabezal de entrada: el arroyo sale de una alcantarilla bajo la calle
+    const cabezal = caja(2.3, CORONA + 0.7 - (base - 0.5), 2 * W, COLOR.concretoOsc);
+    cabezal.position.set(X_CANAL_INI - 1.15, (CORONA + 0.7 + base - 0.5) / 2, Z_CANAL);
+    const hBoca = Math.max(0.3, Math.min(yD * 0.85, H - 0.1));
+    const boca = caja(0.06, hBoca, Math.max(0.2, b * 0.9), 0x1f2a30);
+    boca.position.set(X_CANAL_INI + 0.03, piso + hBoca / 2, Z_CANAL);
     g.add(cabezal, boca);
-    // Compuerta: dos columnas, viga y placa (la placa sube según el tirante del flujo)
+
+    // Barandas metálicas al borde de los andenes
     const acero = new THREE.MeshStandardMaterial({ color: COLOR.metal, roughness: 0.45, metalness: 0.5 });
-    for (const s of [-1, 1]) {
-      const col = new THREE.Mesh(new THREE.BoxGeometry(0.35, yD + 2.4, 0.35), acero);
-      col.position.set(X_CANAL_FIN, PISO_CANAL + (yD + 2.4) / 2, Z_CANAL + s * (b / 2 + 0.3));
+    const xb0 = X_CANAL_INI + 0.4;
+    const xb1 = X_COMPUERTA - 0.8;
+    const nPostes = Math.floor((xb1 - xb0) / 2.5) + 1;
+    const postes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.08, 1.0, 0.08), acero, nPostes * 2);
+    const aux = new THREE.Object3D();
+    let n = 0;
+    for (const sgn of [-1, 1]) {
+      const zb = Z_CANAL + sgn * (Tc / 2 + 0.3);
+      for (let j = 0; j < nPostes; j++) {
+        aux.position.set(xb0 + j * 2.5, CORONA + 0.5, zb);
+        aux.updateMatrix();
+        postes.setMatrixAt(n++, aux.matrix);
+      }
+      for (const hy of [0.95, 0.5]) {
+        const riel = new THREE.Mesh(new THREE.BoxGeometry(xb1 - xb0, 0.05, 0.05), acero);
+        riel.position.set((xb0 + xb1) / 2, CORONA + hy, zb);
+        g.add(riel);
+      }
+    }
+    postes.castShadow = true;
+    g.add(postes);
+
+    // Compuerta: columnas sobre los andenes, viga y placa que se levanta con el tirante
+    const alturaMarco = H + 0.6;
+    for (const sgn of [-1, 1]) {
+      const col = new THREE.Mesh(new THREE.BoxGeometry(0.35, alturaMarco + H, 0.35), acero);
+      col.position.set(X_COMPUERTA, CORONA + (alturaMarco - H) / 2, Z_CANAL + sgn * (Tc / 2 + 0.2));
       col.castShadow = true;
       g.add(col);
     }
-    const viga = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.35, b + 1.0), acero);
-    viga.position.set(X_CANAL_FIN, PISO_CANAL + yD + 2.4, Z_CANAL);
+    const viga = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.35, Tc + 0.8), acero);
+    viga.position.set(X_COMPUERTA, CORONA + alturaMarco, Z_CANAL);
     viga.castShadow = true;
-    this.placa = new THREE.Mesh(new THREE.BoxGeometry(0.14, yD + 0.6, b), new THREE.MeshStandardMaterial({ color: 0x6f7f84, roughness: 0.5, metalness: 0.4 }));
+    this.placa = new THREE.Mesh(new THREE.BoxGeometry(0.14, H + 0.3, Tc), new THREE.MeshStandardMaterial({ color: 0x6f7f84, roughness: 0.5, metalness: 0.4 }));
     this.placa.castShadow = true;
     g.add(viga, this.placa);
-    // Agua dentro del canal y lámina de inundación
-    this.aguaCanal = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshStandardMaterial({ color: COLOR.agua, roughness: 0.25, transparent: true, opacity: 0.78 }),
+
+    // Pozo de disipación: muro de caída bajo el fondo del canal, muros laterales, muro final y losa
+    const alto = CORONA - (fondo - 0.3);
+    const yMuro = (CORONA + fondo - 0.3) / 2;
+    const largo = FOSA_X1 - FOSA_X0;
+    const piezas = [
+      [MURO_FOSA, base + 0.02 - (fondo - 0.3), 2 * W, FOSA_X0 - MURO_FOSA / 2, (base + 0.02 + fondo - 0.3) / 2, Z_CANAL],
+      [largo + MURO_FOSA, alto, MURO_FOSA, FOSA_X0 + (largo + MURO_FOSA) / 2, yMuro, Z_CANAL - hw - MURO_FOSA / 2],
+      [largo + MURO_FOSA, alto, MURO_FOSA, FOSA_X0 + (largo + MURO_FOSA) / 2, yMuro, Z_CANAL + hw + MURO_FOSA / 2],
+      [MURO_FOSA, alto, 2 * hw, FOSA_X1 + MURO_FOSA / 2, yMuro, Z_CANAL],
+      [largo, 0.3, 2 * hw, (FOSA_X0 + FOSA_X1) / 2, fondo - 0.15, Z_CANAL],
+    ];
+    for (const [w, h, d, x, y, z] of piezas) {
+      const m = caja(w, h, d, COLOR.concreto);
+      m.position.set(x, y, z);
+      g.add(m);
+    }
+    this.aguaFosa = new THREE.Mesh(
+      new THREE.PlaneGeometry(largo, 2 * hw),
+      new THREE.MeshStandardMaterial({ color: COLOR.agua, roughness: 0.25, transparent: true, opacity: 0.85 }),
     );
-    this.aguaCanal.scale.set(L - 0.3, 0.01, b - 0.02);
-    this.aguaCanal.position.set(xm, PISO_CANAL, Z_CANAL);
+    this.aguaFosa.rotation.x = -Math.PI / 2;
+    this.aguaFosa.position.set((FOSA_X0 + FOSA_X1) / 2, piso - 1.5, Z_CANAL);
+    g.add(this.aguaFosa);
+
+    // Agua dentro del canal (prisma trapezoidal que se rehace según el tirante) y lámina de inundación
+    this.aguaCanal = new THREE.Mesh(
+      new THREE.BufferGeometry(),
+      new THREE.MeshStandardMaterial({ color: COLOR.agua, roughness: 0.25, transparent: true, opacity: 0.8 }),
+    );
+    this.aguaCanal.receiveShadow = true;
+    this.claveAgua = '';
     this.inundacion = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
       new THREE.MeshStandardMaterial({ color: 0x5a8ea3, roughness: 0.3, transparent: true, opacity: 0.6, depthWrite: false }),
@@ -676,41 +801,22 @@ export class Escena {
     this.inundacion.visible = false;
     g.add(this.aguaCanal, this.inundacion);
     this.indexar(g);
-    this.canalGeo = { b, yD, L, xm };
+    this.canalGeo = { b, zt, yD, H, L, xm, piso, Tc, W, hw, fondo };
   }
 
-  construirFosa() {
-    const g = this.grupos.canal;
-    const fosa = new THREE.Group();
-    fosa.userData.fijo = true;
-    const ancho = FOSA.x1 - FOSA.x0;
-    const largo = FOSA.z1 - FOSA.z0;
-    const alto = PISO_CANAL + 0.3 - FOSA.fondo;
-    const xc = (FOSA.x0 + FOSA.x1) / 2;
-    const zc = (FOSA.z0 + FOSA.z1) / 2;
-    const yc = FOSA.fondo + alto / 2;
-    const muros = [
-      [ancho + 0.6, alto, 0.3, xc, yc, FOSA.z0 - 0.15],
-      [ancho + 0.6, alto, 0.3, xc, yc, FOSA.z1 + 0.15],
-      [0.3, alto, largo, FOSA.x1 + 0.15, yc, zc],
-    ];
-    for (const [w, h, d, x, y, z] of muros) {
-      const m = caja(w, h, d, COLOR.concreto);
-      m.position.set(x, y, z);
-      fosa.add(m);
-    }
-    this.aguaFosa = new THREE.Mesh(
-      new THREE.PlaneGeometry(ancho, largo),
-      new THREE.MeshStandardMaterial({ color: COLOR.agua, roughness: 0.25, transparent: true, opacity: 0.85 }),
-    );
-    this.aguaFosa.rotation.x = -Math.PI / 2;
-    this.aguaFosa.position.set(xc, PISO_CANAL - 1.5, zc);
-    fosa.add(this.aguaFosa);
-    // La fosa vive fuera del grupo del canal para no reconstruirse con él
-    this.scene.add(fosa);
-    fosa.userData.tab = 'arroyo';
-    this.indexar(fosa);
-    void g;
+  /** Prisma de agua con sección trapezoidal de tirante y (ligeramente separado de las paredes). */
+  formaAgua(y) {
+    const { b, zt, piso, L } = this.canalGeo;
+    const h = Math.max(0.01, y);
+    const sup = b / 2 + zt * h;
+    const s = new THREE.Shape();
+    s.moveTo(-b / 2 + 0.03, piso + 0.01);
+    s.lineTo(b / 2 - 0.03, piso + 0.01);
+    s.lineTo(sup - 0.03, piso + h);
+    s.lineTo(-sup + 0.03, piso + h);
+    s.closePath();
+    this.aguaCanal.geometry.dispose();
+    this.aguaCanal.geometry = extruirEnX(s, X_CANAL_INI + 0.1, L - 0.2);
   }
 
   particulasCanal() {
@@ -882,7 +988,7 @@ export class Escena {
     if (kC !== this.claves.casa) { this.construirCasa(); this.claves.casa = kC; }
     const kD = k(p.Ddistribucion, p.Dtanque, p.alturaGrifo);
     if (kD !== this.claves.distribucion) { this.construirDistribucion(); this.claves.distribucion = kD; }
-    const kK = k(p.perimetro, p.anchoCanal);
+    const kK = k(p.perimetro, p.anchoCanal, p.taludCanal ?? 0);
     if (kK !== this.claves.canal) { this.construirCanal(); this.claves.canal = kK; }
 
     // Tanque
@@ -894,21 +1000,21 @@ export class Escena {
 
     // Arroyo
     const c = r.canal;
-    const { b, yD, L, xm } = this.canalGeo;
-    const yAgua = c.desborde ? yD : c.yFlujo;
-    this.aguaCanal.scale.set(L - 0.3, Math.max(0.01, yAgua), b - 0.02);
-    this.aguaCanal.position.y = PISO_CANAL + Math.max(0.01, yAgua) / 2;
-    this.placa.position.set(X_CANAL_FIN - 0.05, PISO_CANAL + yAgua + (yD + 0.6) / 2, Z_CANAL);
+    const { b, zt, H, L, xm, piso, W } = this.canalGeo;
+    const yAgua = c.desborde ? H : c.yFlujo;       // en desborde el agua llega a la corona
+    const kAgua = k(yAgua);
+    if (kAgua !== this.claveAgua) { this.formaAgua(yAgua); this.claveAgua = kAgua; }
+    this.placa.position.set(X_COMPUERTA - 0.25, piso + yAgua + (H + 0.3) / 2, Z_CANAL);
     if (c.desborde) {
       const exceso = Math.min(3, (p.Qcrecida - c.Qcap) / Math.max(c.Qcap, 0.1));
       const ext = 2.5 + exceso * 6;
       this.inundacion.visible = true;
-      this.inundacion.scale.set(L * 0.92, b + 0.6 + 2 * ext, 1);
-      this.inundacion.position.set(xm - L * 0.03, PISO_CANAL + 0.5 + Math.min(0.35, exceso * 0.15), Z_CANAL);
+      this.inundacion.scale.set(L * 0.92, 2 * W + 2 * ext, 1);
+      this.inundacion.position.set(xm - L * 0.03, CORONA + 0.06 + Math.min(0.35, exceso * 0.15), Z_CANAL);
     } else {
       this.inundacion.visible = false;
     }
-    this.aguaFosa.position.y = PISO_CANAL - p.alturaCaida;
+    this.aguaFosa.position.y = piso - p.alturaCaida;
 
     // Chorros
     this.chorroGrifo.configurar({
@@ -919,8 +1025,8 @@ export class Escena {
     this.rejilla.visible = r.vGrifo > 0.01;
     this.llave.rotation.z = (1 - p.apertura) * 1.2;
     this.chorroCompuerta.configurar({
-      origen: new THREE.Vector3(X_CANAL_FIN + 0.1, PISO_CANAL, Z_CANAL),
-      dir: 'x', v: c.vCanal, h: p.alturaCaida, esc: 1, ancho: b * 0.95, espesor: yAgua,
+      origen: new THREE.Vector3(FOSA_X0 + 0.05, piso, Z_CANAL),
+      dir: 'x', v: c.vCanal, h: p.alturaCaida, esc: 1, ancho: (b + zt * yAgua) * 0.95, espesor: yAgua,
       cantidad: Math.round(120 + 300 * Math.min(1, c.Qsale / 20)),
     });
 
@@ -955,7 +1061,7 @@ export class Escena {
     const textoCasa = r.Hcasa > 0 ? `${fmt(r.Hcasa)} m.c.a., ${fmt(r.qGrifo * 1000)} L/s` : 'Sin agua en el grifo';
     this.etiqueta('casa', textoCasa, nivelCasa, V(X_CASA, 7.2 + Math.max(3.0, p.alturaGrifo + 1.4) + 3.4, Z_CASA));
     const textoCanal = c.desborde ? `Desborde: ${fmt(p.Qcrecida)} > ${fmt(c.Qcap)} m³/s` : `${fmt(p.Qcrecida)} de ${fmt(c.Qcap)} m³/s`;
-    this.etiqueta('canal', textoCanal, c.desborde ? 'alerta' : 'ok', V(12, PISO_CANAL + yD + 2.2, Z_CANAL));
+    this.etiqueta('canal', textoCanal, c.desborde ? 'alerta' : 'ok', V(12, CORONA + 2.6, Z_CANAL));
     this.etiqueta('piezo', '', 'ok', V((rT + X_GRIFO) / 2 + 3, (sup + hCasa) / 2 + 1.6, 0.6));
   }
 
@@ -981,8 +1087,8 @@ export class Escena {
 
   pasoCanal(dt) {
     const c = this.r.canal;
-    const { b, yD, L } = this.canalGeo;
-    const yAgua = c.desborde ? yD : c.yFlujo;
+    const { b, zt, H, L, piso } = this.canalGeo;
+    const yAgua = c.desborde ? H : c.yFlujo;
     const aux = new THREE.Object3D();
     const avance = (c.vCanal * VIS_FLUJO * 0.5 * dt) / L;
     const n = Math.round(this.nCanal * Math.min(1, 0.25 + c.Qsale / 15));
@@ -990,10 +1096,12 @@ export class Escena {
     this.canalPart.visible = c.vCanal > 0.01;
     for (let i = 0; i < n; i++) {
       this.cpX[i] = (this.cpX[i] + avance * (0.8 + 0.4 * this.cpY[i])) % 1;
+      const h = 0.05 + this.cpY[i] * Math.max(0.02, yAgua - 0.1);
+      const ancho = b + 2 * zt * h;                 // ancho del trapecio a esa altura
       aux.position.set(
         X_CANAL_INI + 0.3 + this.cpX[i] * (L - 0.6),
-        PISO_CANAL + 0.05 + this.cpY[i] * Math.max(0.02, yAgua - 0.1),
-        Z_CANAL + this.cpZ[i] * (b - 0.25),
+        piso + h,
+        Z_CANAL + this.cpZ[i] * Math.max(0.05, ancho - 0.3),
       );
       aux.scale.setScalar(0.09);
       aux.updateMatrix();

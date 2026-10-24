@@ -1,6 +1,6 @@
 # Simulador hídrico 3D de Santa Marta
 
-Aplicación web interactiva que simula el abastecimiento de agua de un sector de Santa Marta (río → bombeo → aducción → tanque → distribución → grifo de una vivienda) y la capacidad de un arroyo canalizado durante una crecida.
+Aplicación web interactiva que simula el abastecimiento de agua de un sector de Santa Marta (río → bombeo → aducción → tanque → distribución → grifo de una vivienda) y la capacidad de un arroyo canalizado durante una crecida. El arroyo corre por un canal trapezoidal de concreto excavado bajo el nivel de la calle, con andenes, barandas, compuerta y pozo de disipación.
 
 Proyecto final de Álgebra y Geometría Analítica, 2026-II. Línea de investigación: Hidráulica de Canales Abiertos y Redes de Acueducto.
 
@@ -27,11 +27,21 @@ Las librerías van incluidas en `lib/`, así que el simulador no depende de ning
 | Ecuación lineal | Pérdida laminar h_f = k·Q (Hagen-Poiseuille) | `perdidaLaminar` |
 | Ecuación lineal | Nivel del tanque h(t) = h₀ + m·t | `nivelTanque`, `tiempoHastaNivel` |
 | Ecuación lineal | Costo de bombeo C(V) = m·V + b | `costoBombeo` |
-| Ecuación cuadrática | Área del canal con perímetro fijo A(b) = −½b² + (P/2)b y su vértice | `areaCanal`, `seccionOptima` |
+| Ecuación cuadrática | Área del canal trapezoidal con perímetro y talud fijos A(b) = ((z−k)/k²)b² + (P(k−2z)/k²)b + zP²/k², k = 2√(1+z²), y su vértice | `areaCanal`, `seccionOptima` |
 | Ecuación cuadrática | Trayectoria del chorro y(x) = −(g/2v²)x² + h₀ | `trayectoriaChorro`, `alcanceChorro` |
 | Ecuación cuadrática | Velocidad de salida del grifo ((1+K)/2g)v² − H = 0 | `velocidadGrifo` |
 
 El simulador calcula también el número de Reynolds. Con caudales reales de acueducto el flujo es turbulento, de modo que la recta laminar subestima la pérdida; para la presión de la vivienda se usa Darcy-Weisbach (Swamee-Jain). Esa diferencia se muestra en la pestaña Tuberías.
+
+## Sección del arroyo
+
+El canal es trapezoidal: fondo de ancho b y paredes con talud z (z metros horizontales por cada metro vertical).
+
+- Perímetro mojado: P = b + 2y·√(1 + z²)
+- Área de flujo: A = (b + z·y)·y
+- Ancho de la lámina: T = b + 2z·y
+
+Con P y z fijos, el tirante es y = (P − b)/k con k = 2√(1 + z²), y el área queda como una parábola en b que abre hacia abajo. Su vértice da la sección de máxima eficiencia, en la que b/y = 2(√(1 + z²) − z). Con z = 0 se recupera el canal rectangular (b = P/2, A = P²/8).
 
 ## Probar en el computador
 
@@ -56,4 +66,4 @@ npm test
 
 ## Valores de referencia
 
-La tarifa de energía (950 COP/kWh), el cargo fijo y la presión mínima de servicio (15 m.c.a.) son valores editables de referencia. Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017).
+La tarifa de energía (950 COP/kWh), el cargo fijo y la presión mínima de servicio (15 m.c.a.) son valores editables de referencia. Antes de la sustentación conviene contrastarlos con la tarifa vigente del operador de energía y con el Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017).

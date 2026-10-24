@@ -10,7 +10,8 @@
  *   1. Decimales  → redondear(), conversiones, cotas, áreas y volúmenes.
  *   2. Lineales   → perdidaLaminar() (Hagen-Poiseuille), nivelTanque(),
  *                   costoBombeo().
- *   3. Cuadráticas→ areaCanal() / anchoOptimo() (vértice de la parábola),
+ *   3. Cuadráticas→ areaCanal() / seccionOptima() del canal trapezoidal
+ *                   (vértice de la parábola),
  *                   trayectoriaChorro() / alcanceChorro(),
  *                   velocidadGrifo() (energía: H = (1+K)·v²/2g).
  */
@@ -210,34 +211,70 @@ export function vertice(a, b, c) {
   return { x, y: a * x * x + b * x + c };
 }
 
-// ── Canal rectangular con perímetro mojado fijo P = b + 2y ─────────────────
+// ── Canal trapezoidal con perímetro mojado fijo ────────────────────────────
+// Sección: fondo de ancho b, paredes inclinadas con talud z (z metros en
+// horizontal por cada metro en vertical). z = 0 es el canal rectangular.
+//   Perímetro mojado  P = b + 2y·√(1 + z²)
+//   Área de flujo     A = (b + z·y)·y
+//   Ancho superficial T = b + 2z·y
 
-/** Tirante (profundidad) que deja un ancho b: y = (P − b)/2 [m]. */
-export function tiranteDesdePerimetro(P, b) {
-  return (P - b) / 2;
+/** Factor de las paredes k = 2·√(1 + z²) (longitud de pared mojada por metro de tirante). */
+export function factorParedes(z = 0) {
+  return 2 * Math.sqrt(1 + z * z);
 }
 
-/** Coeficientes de A(b) = −½·b² + (P/2)·b + 0. */
-export function coeficientesAreaCanal(P) {
-  return { a: -0.5, b: P / 2, c: 0 };
+/** Tirante (profundidad) que deja un ancho b: y = (P − b) / (2√(1 + z²)) [m]. */
+export function tiranteDesdePerimetro(P, b, z = 0) {
+  return (P - b) / factorParedes(z);
 }
 
-/** Área de flujo A(b) = b·(P − b)/2 [m²]. */
-export function areaCanal(P, b) {
-  const k = coeficientesAreaCanal(P);
+/** Área de flujo de la sección trapezoidal A = (b + z·y)·y [m²]. */
+export function areaTrapecio(b, y, z = 0) {
+  return (b + z * y) * y;
+}
+
+/** Perímetro mojado P = b + 2y·√(1 + z²) [m]. */
+export function perimetroTrapecio(b, y, z = 0) {
+  return b + factorParedes(z) * y;
+}
+
+/** Ancho de la lámina de agua T = b + 2z·y [m]. */
+export function anchoSuperficial(b, y, z = 0) {
+  return b + 2 * z * y;
+}
+
+/**
+ * Coeficientes de A(b) = a·b² + β·b + c con P y z fijos. Sustituyendo
+ * y = (P − b)/k en A = b·y + z·y²  (k = 2√(1 + z²)):
+ *   a = (z − k)/k²   β = P·(k − 2z)/k²   c = z·P²/k²
+ * Como k > z, a < 0: la parábola abre hacia abajo y tiene un máximo.
+ * Con z = 0 queda A(b) = −½b² + (P/2)b (canal rectangular).
+ */
+export function coeficientesAreaCanal(P, z = 0) {
+  const k = factorParedes(z);
+  return { a: (z - k) / (k * k), b: (P * (k - 2 * z)) / (k * k), c: (z * P * P) / (k * k) };
+}
+
+/** Área de flujo A(b) con perímetro P y talud z fijos [m²]. */
+export function areaCanal(P, b, z = 0) {
+  const k = coeficientesAreaCanal(P, z);
   return k.a * b * b + k.b * b + k.c;
 }
 
-/** Sección óptima: vértice de la parábola → b = P/2, y = P/4, A_máx = P²/8. */
-export function seccionOptima(P) {
-  const k = coeficientesAreaCanal(P);
+/**
+ * Sección óptima: vértice de la parábola A(b).
+ *   b* = P·(k − 2z) / (2(k − z)),  y* = P / (2(k − z))  →  b*÷y* = 2(√(1+z²) − z)
+ * Con z = 0: b = P/2, y = P/4, A_máx = P²/8.
+ */
+export function seccionOptima(P, z = 0) {
+  const k = coeficientesAreaCanal(P, z);
   const v = vertice(k.a, k.b, k.c);
-  return { b: v.x, y: tiranteDesdePerimetro(P, v.x), A: v.y };
+  return { b: v.x, y: tiranteDesdePerimetro(P, v.x, z), A: v.y };
 }
 
-/** Anchos que dan un área objetivo: raíces de −½b² + (P/2)b − A = 0. */
-export function anchosParaArea(P, Aobjetivo) {
-  const k = coeficientesAreaCanal(P);
+/** Anchos que dan un área objetivo: raíces de a·b² + β·b + (c − A) = 0. */
+export function anchosParaArea(P, Aobjetivo, z = 0) {
+  const k = coeficientesAreaCanal(P, z);
   return resolverCuadratica(k.a, k.b, k.c - Aobjetivo).raices.filter((b) => b > 0 && b < P);
 }
 
@@ -247,19 +284,19 @@ export function manning(A, Pm, S, n) {
   return (1 / n) * A * Math.pow(A / Pm, 2 / 3) * Math.sqrt(S);
 }
 
-/** Caudal de un canal rectangular de ancho b con tirante y. */
-export function caudalCanal(b, y, S, n) {
-  return manning(b * y, b + 2 * y, S, n);
+/** Caudal de un canal trapezoidal (fondo b, talud z) con tirante y. */
+export function caudalCanal(b, y, S, n, z = 0) {
+  return manning(areaTrapecio(b, y, z), perimetroTrapecio(b, y, z), S, n);
 }
 
 /** Tirante normal para un caudal dado (bisección sobre Manning, que crece con y). */
-export function tiranteNormal(Q, b, S, n, yMax = 50) {
+export function tiranteNormal(Q, b, S, n, z = 0, yMax = 50) {
   if (Q <= 0) return 0;
   let lo = 0;
   let hi = yMax;
   for (let i = 0; i < 80; i++) {
     const mid = (lo + hi) / 2;
-    if (caudalCanal(b, mid, S, n) < Q) lo = mid;
+    if (caudalCanal(b, mid, S, n, z) < Q) lo = mid;
     else hi = mid;
   }
   return (lo + hi) / 2;
@@ -330,9 +367,10 @@ export const PARAMETROS_INICIALES = Object.freeze({
   K0: 10.0,
   dBoquilla: 0.0127,      // m (½")
   presionMinima: 15.0,    // m.c.a. de referencia
-  // Arroyo canalizado
+  // Arroyo canalizado (sección trapezoidal)
   perimetro: 6.0,         // m
-  anchoCanal: 2.4,        // m
+  anchoCanal: 2.4,        // m (ancho del fondo)
+  taludCanal: 1.0,        // z: m horizontales por m vertical (1:1 → paredes a 45°)
   pendiente: 0.005,
   nManning: 0.015,
   Qcrecida: 8.0,          // m³/s
@@ -374,17 +412,20 @@ export function calcularSistema(p, nivel) {
   const tLleno = tiempoHastaNivel(nivel, p.hMax, Qent, Qsal, At);
   const tVacio = tiempoHastaNivel(nivel, 0, Qent, Qsal, At);
 
-  // Arroyo
-  const yDiseno = tiranteDesdePerimetro(p.perimetro, p.anchoCanal);
-  const Acanal = areaCanal(p.perimetro, p.anchoCanal);
-  const optimo = seccionOptima(p.perimetro);
-  const Qcap = caudalCanal(p.anchoCanal, yDiseno, p.pendiente, p.nManning);
-  const QcapOptimo = caudalCanal(optimo.b, optimo.y, p.pendiente, p.nManning);
-  const yNormal = tiranteNormal(p.Qcrecida, p.anchoCanal, p.pendiente, p.nManning);
+  // Arroyo (canal trapezoidal)
+  const zt = p.taludCanal ?? 0;
+  const yDiseno = tiranteDesdePerimetro(p.perimetro, p.anchoCanal, zt);
+  const Acanal = areaCanal(p.perimetro, p.anchoCanal, zt);
+  const optimo = seccionOptima(p.perimetro, zt);
+  const Tdiseno = anchoSuperficial(p.anchoCanal, yDiseno, zt);
+  const Qcap = caudalCanal(p.anchoCanal, yDiseno, p.pendiente, p.nManning, zt);
+  const QcapOptimo = caudalCanal(optimo.b, optimo.y, p.pendiente, p.nManning, zt);
+  const yNormal = tiranteNormal(p.Qcrecida, p.anchoCanal, p.pendiente, p.nManning, zt);
   const desborde = p.Qcrecida > Qcap;
   const Qsale = Math.min(p.Qcrecida, Qcap);
   const yFlujo = Math.min(yNormal, yDiseno);
-  const vCanal = yFlujo > 0 ? Qsale / (p.anchoCanal * yFlujo) : 0;
+  const Aflujo = areaTrapecio(p.anchoCanal, yFlujo, zt);
+  const vCanal = Aflujo > 0 ? Qsale / Aflujo : 0;
   const alcanceCompuerta = alcanceChorro(p.alturaCaida, vCanal);
 
   let estado = 'normal';
@@ -400,9 +441,9 @@ export function calcularSistema(p, nivel) {
     distribucion: dis, Hcasa, presionCasa: mcaAkPa(Math.max(0, Hcasa)),
     vGrifo, qGrifo, alcance, pendienteNivel, tLleno, tVacio,
     canal: {
-      yDiseno, A: Acanal, optimo, Qcap, QcapOptimo, yNormal, desborde,
-      Qsale, yFlujo, vCanal, alcanceCompuerta,
-      coef: coeficientesAreaCanal(p.perimetro),
+      talud: zt, yDiseno, A: Acanal, Tdiseno, optimo, Qcap, QcapOptimo, yNormal, desborde,
+      Qsale, yFlujo, Aflujo, vCanal, alcanceCompuerta,
+      coef: coeficientesAreaCanal(p.perimetro, zt),
     },
     estado,
   };

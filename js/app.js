@@ -48,7 +48,7 @@ const TABS = [
   { id: 'tuberias', nombre: 'Tuberías', intro: 'La aducción lleva el agua del río al tanque y la distribución la baja hasta las viviendas. El diámetro y el caudal fijan la velocidad y lo que se pierde por fricción.' },
   { id: 'tanque', nombre: 'Tanque', intro: 'El tanque compensa la diferencia entre lo que entra por bombeo y lo que consume el sector. Con caudales constantes, su nivel sube o baja en línea recta.' },
   { id: 'vivienda', nombre: 'Vivienda', intro: 'La presión en la casa es la altura del agua en el tanque menos lo que se pierde en el camino. Con esa presión sale el chorro del grifo.' },
-  { id: 'arroyo', nombre: 'Arroyo', intro: 'Con los aguaceros los arroyos de la ciudad crecen de golpe. El canal rectangular tiene que conducir la crecida sin desbordarse.' },
+  { id: 'arroyo', nombre: 'Arroyo', intro: 'Con los aguaceros los arroyos de la ciudad crecen de golpe. El canal trapezoidal, excavado por debajo de la calle, tiene que conducir la crecida sin desbordarse.' },
 ];
 
 const MATERIALES = [
@@ -110,7 +110,11 @@ const CONTROLES = [
   { tab: 'arroyo', grupo: 'Sección del canal' },
   { tab: 'arroyo', id: 'perimetro', clave: 'perimetro', etiqueta: 'Perímetro mojado disponible (P)', unidad: 'm', min: 2, max: 12, paso: 0.05, dec: 2 },
   { tab: 'arroyo', id: 'anchoCanal', clave: 'anchoCanal', etiqueta: 'Ancho del fondo (b)', unidad: 'm', min: 0.2, max: () => p.perimetro - 0.2, paso: 0.05, dec: 2 },
-  { tab: 'arroyo', accion: 'optimo', texto: 'Usar el ancho óptimo (b = P/2)' },
+  {
+    tab: 'arroyo', id: 'taludCanal', clave: 'taludCanal', etiqueta: 'Talud de las paredes (z : 1)', unidad: 'H:V', min: 0, max: 3, paso: 0.05, dec: 2,
+    extra: (z) => (z > 0 ? `Paredes a ${fmt((Math.atan(1 / z) * 180) / Math.PI, 1)}° con la horizontal` : 'z = 0: paredes verticales (canal rectangular)'),
+  },
+  { tab: 'arroyo', accion: 'optimo', texto: 'Usar el ancho óptimo (vértice de A(b))' },
   { tab: 'arroyo', grupo: 'Pendiente, material y crecida' },
   { tab: 'arroyo', id: 'pendiente', clave: 'pendiente', etiqueta: 'Pendiente del fondo (S)', unidad: 'm/m', min: 0.0005, max: 0.03, paso: 0.0005, dec: 4 },
   { tab: 'arroyo', id: 'nManning', clave: 'nManning', etiqueta: 'Material del canal', tipo: 'material' },
@@ -196,7 +200,7 @@ function crearPanel() {
       div.className = 'acciones';
       div.innerHTML = `<button type="button" class="boton">${c.texto}</button>`;
       div.querySelector('button').addEventListener('click', () => {
-        p.anchoCanal = M.seccionOptima(p.perimetro).b;
+        p.anchoCanal = M.seccionOptima(p.perimetro, p.taludCanal).b;
         cambio();
       });
       destino.appendChild(div);
@@ -475,15 +479,20 @@ const PINTORES = {
   arroyo() {
     const c = r.canal;
     const kc = c.coef;
+    const z = c.talud;
+    const k = M.factorParedes(z);
     const R = c.A / p.perimetro;
     const uso = (p.Qcrecida / c.Qcap) * 100;
     const kChorro = M.coeficientesChorro(p.alturaCaida, Math.max(c.vCanal, 1e-9));
+    const signo = (v) => (v < 0 ? '−' : '+');
     return {
       metricas: metricas([
         ['Estado', c.desborde ? 'Desborde' : `Sin desborde (${fmt(uso, 0)} %)`, '', c.desborde ? 'alerta' : (uso > 85 ? 'aviso' : 'ok')],
-        ['Tirante de diseño y = (P − b)/2', fmt(c.yDiseno), 'm'],
+        ['Tirante de diseño y', fmt(c.yDiseno), 'm'],
+        ['Ancho en la superficie T = b + 2zy', fmt(c.Tdiseno), 'm'],
         ['Área de flujo A(b)', fmt(c.A), 'm²'],
-        ['Área máxima posible (b = P/2)', fmt(c.optimo.A), 'm²'],
+        ['Área máxima posible (vértice)', fmt(c.optimo.A), 'm²'],
+        ['Ancho óptimo del fondo b*', fmt(c.optimo.b), 'm'],
         ['Capacidad del canal (Manning)', fmt(c.Qcap), 'm³/s'],
         ['Capacidad con la sección óptima', fmt(c.QcapOptimo), 'm³/s'],
         ['Tirante que necesita la crecida', fmt(c.yNormal), 'm', c.desborde ? 'alerta' : ''],
@@ -491,10 +500,14 @@ const PINTORES = {
         ['Alcance del chorro en la compuerta', fmt(c.alcanceCompuerta), 'm'],
       ]),
       ecuacion: [
+        ecu.tipo('Decimales: geometría de la sección trapezoidal'),
+        ecu.formula(`${i('P')} = ${i('b')} + 2${i('y')}√(1 + ${i('z')}²),  ${i('A')} = (${i('b')} + ${i('z')}${i('y')})·${i('y')},  ${i('T')} = ${i('b')} + 2${i('z')}${i('y')}`),
+        ecu.sust(`${i('y')} = (${fmt(p.perimetro)} − ${fmt(p.anchoCanal)}) / (2√(1 + ${fmt(z)}²)) = ${fmt(p.perimetro - p.anchoCanal)} / ${fmt(k, 4)} = ${fmt(c.yDiseno, 4)} m`),
+        ecu.sust(`${i('A')} = (${fmt(p.anchoCanal)} + ${fmt(z)} × ${fmt(c.yDiseno, 4)}) × ${fmt(c.yDiseno, 4)} = ${fmt(c.A)} m²;  ${i('T')} = ${fmt(c.Tdiseno)} m`),
         ecu.tipo('Ecuación cuadrática: área con perímetro mojado fijo'),
-        ecu.formula(`${i('P')} = ${i('b')} + 2${i('y')}  ⇒  ${i('A')}(${i('b')}) = ${i('b')}(${i('P')} − ${i('b')})/2 = −½${i('b')}² + (${i('P')}/2)${i('b')}`),
-        ecu.sust(`${i('A')}(${i('b')}) = ${fmt(kc.a, 1)}${i('b')}² + ${fmt(kc.b)}${i('b')};  ${i('A')}(${fmt(p.anchoCanal)}) = ${fmt(c.A)} m²`),
-        ecu.sust(`Vértice: ${i('b')}* = −${fmt(kc.b)} / (2 × ${fmt(kc.a, 1)}) = ${fmt(c.optimo.b)} m,  ${i('y')}* = ${fmt(c.optimo.y)} m,  ${i('A')}<sub>máx</sub> = ${i('P')}²/8 = ${fmt(c.optimo.A)} m²`),
+        ecu.formula(`${i('y')} = (${i('P')} − ${i('b')})/${i('k')}, ${i('k')} = 2√(1+${i('z')}²)  ⇒  ${i('A')}(${i('b')}) = ((${i('z')} − ${i('k')})/${i('k')}²)${i('b')}² + (${i('P')}(${i('k')} − 2${i('z')})/${i('k')}²)${i('b')} + ${i('z')}${i('P')}²/${i('k')}²`),
+        ecu.sust(`${i('A')}(${i('b')}) = ${fmt(kc.a, 4)}${i('b')}² ${signo(kc.b)} ${fmt(Math.abs(kc.b), 4)}${i('b')} ${signo(kc.c)} ${fmt(Math.abs(kc.c), 4)};  ${i('A')}(${fmt(p.anchoCanal)}) = ${fmt(c.A)} m²`),
+        ecu.sust(`Vértice: ${i('b')}* = −${fmt(kc.b, 4)} / (2 × (${fmt(kc.a, 4)})) = ${fmt(c.optimo.b)} m,  ${i('y')}* = ${fmt(c.optimo.y)} m,  ${i('A')}<sub>máx</sub> = ${fmt(c.optimo.A)} m²`),
         ecu.tipo('Decimales: capacidad con la ecuación de Manning'),
         ecu.formula(`${i('Q')} = (1/${i('n')}) · ${i('A')} · ${i('R')}<sup>2/3</sup> · ${i('S')}<sup>1/2</sup>,  ${i('R')} = ${i('A')}/${i('P')}`),
         ecu.sust(`${i('Q')} = (1/${fmt(p.nManning, 3)}) × ${fmt(c.A)} × ${fmt(R, 3)}<sup>2/3</sup> × ${fmt(p.pendiente, 4)}<sup>1/2</sup> = ${fmt(c.Qcap)} m³/s`),
@@ -504,15 +517,15 @@ const PINTORES = {
           : '',
         ecu.nota(c.desborde
           ? `La crecida de ${fmt(p.Qcrecida)} m³/s supera la capacidad en ${fmt(p.Qcrecida - c.Qcap)} m³/s y el agua sale a la calle. Prueba la sección óptima, un material más liso o más perímetro.`
-          : 'Con el mismo perímetro de concreto, el vértice de la parábola da la sección que más agua conduce.', c.desborde),
+          : `Con el mismo perímetro de concreto, el vértice de la parábola da la sección que más agua conduce; en ella b/y = 2(√(1+z²) − z) = ${fmt(2 * (Math.sqrt(1 + z * z) - z), 3)}. Con z = 0 se recupera el canal rectangular (b = P/2).`, c.desborde),
       ].join(''),
-      leyenda: 'Área de flujo según el ancho del fondo, con el perímetro mojado fijo. El vértice marca la sección óptima.',
+      leyenda: 'Área de flujo según el ancho del fondo, con el perímetro mojado y el talud fijos. El vértice marca la sección óptima.',
       grafica(g) {
         const col = paleta();
         const P = p.perimetro;
         const pts = Array.from({ length: 61 }, (_, j) => {
           const b = (P * j) / 60;
-          return { x: b, y: M.areaCanal(P, b) };
+          return { x: b, y: M.areaCanal(P, b, z) };
         });
         actualizarGrafica(g, [
           serieLinea('A(b)', pts, col.agua),

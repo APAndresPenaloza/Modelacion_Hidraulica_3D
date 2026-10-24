@@ -84,6 +84,40 @@ test('Cuadrática: canal rectangular óptimo con P = 6 m', () => {
   for (const b of [0.5, 1, 2, 2.9, 3.1, 4, 5.5]) assert.ok(M.areaCanal(6, b) < opt.A);
 });
 
+test('Cuadrática: canal trapezoidal con talud 1:1 y P = 6 m', () => {
+  const z = 1;
+  const k = 2 * Math.SQRT2; // 2√2 = 2.828427
+  // b = 2.4 → y = 3.6/2√2 = 1.272792; A = (2.4 + 1.272792)·1.272792 = 4.674701
+  const y = M.tiranteDesdePerimetro(6, 2.4, z);
+  cerca(y, 1.272792, 1e-6);
+  cerca(M.areaCanal(6, 2.4, z), 4.674701, 1e-6);
+  cerca(M.areaTrapecio(2.4, y, z), M.areaCanal(6, 2.4, z), 1e-12);
+  cerca(M.perimetroTrapecio(2.4, y, z), 6, 1e-12);
+  cerca(M.anchoSuperficial(2.4, y, z), 4.945584, 1e-6);
+  // Vértice: b* = 6(k − 2)/(2(k − 1)) = 1.359245, y* = 6/(2(k − 1)) = 1.640755
+  const opt = M.seccionOptima(6, z);
+  cerca(opt.b, (6 * (k - 2)) / (2 * (k - 1)), 1e-12);
+  cerca(opt.y, 6 / (2 * (k - 1)), 1e-12);
+  cerca(opt.A, (opt.b + opt.y) * opt.y, 1e-12);
+  // Condición de máxima eficiencia: b/y = 2(√(1+z²) − z)
+  cerca(opt.b / opt.y, 2 * (Math.SQRT2 - 1), 1e-12);
+  for (const b of [0.3, 0.8, 1.2, 1.5, 2.4, 4]) assert.ok(M.areaCanal(6, b, z) < opt.A);
+  // Con z = 0 se recupera el canal rectangular
+  const rect = M.coeficientesAreaCanal(6, 0);
+  assert.deepEqual([rect.a, rect.b, rect.c], [-0.5, 3, 0]);
+  // Anchos con la misma área que b = 2.4 (raíces de la cuadrática)
+  const anchos = M.anchosParaArea(6, M.areaCanal(6, 2.4, z), z);
+  assert.ok(anchos.some((b) => Math.abs(b - 2.4) < 1e-9));
+});
+
+test('Manning en canal trapezoidal y tirante normal', () => {
+  // b = 2, y = 1, z = 1 → A = 3, P = 2 + 2√2 = 4.828427, R = 0.621320
+  // Q = (1/0.015)·3·0.621320^(2/3)·√0.005 = 200·0.728120·0.070711 = 10.297
+  cerca(M.caudalCanal(2, 1, 0.005, 0.015, 1), 10.2973, 0.001);
+  const y = M.tiranteNormal(8, 2.4, 0.005, 0.015, 1);
+  cerca(M.caudalCanal(2.4, y, 0.005, 0.015, 1), 8, 1e-6);
+});
+
 test('Manning y tirante normal', () => {
   // b=3, y=1.5 → A=4.5, P=6, R=0.75; Q = (1/0.015)·4.5·0.75^(2/3)·√0.005 = 17.511
   cerca(M.caudalCanal(3, 1.5, 0.005, 0.015), 17.511, 0.001);
