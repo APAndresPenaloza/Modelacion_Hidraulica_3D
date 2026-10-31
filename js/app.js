@@ -5,6 +5,7 @@
 import * as M from './modelo.js';
 import { Escena } from './escena3d.js';
 import { crearGrafica, actualizarGrafica, serieLinea, seriePuntos, paleta } from './graficas.js';
+import { ExperimentoReynolds } from './reynolds.js';
 
 // ── Estado ────────────────────────────────────────────────────────────────
 const NIVEL_INICIAL = 3.2;
@@ -44,8 +45,8 @@ const lps = M.lpsAm3s;
 
 // ── Definición de pestañas y controles ─────────────────────────────────────
 const TABS = [
-  { id: 'captacion', nombre: 'Captación', intro: 'El agua se toma del río y una bomba la eleva hasta el tanque. Aquí se fija cuánto se bombea y cuánto cuesta la energía de hacerlo.' },
-  { id: 'tuberias', nombre: 'Tuberías', intro: 'La aducción lleva el agua del río al tanque y la distribución la baja hasta las viviendas. El diámetro y el caudal fijan la velocidad y lo que se pierde por fricción.' },
+  { id: 'captacion', nombre: 'Captación', extra: true, intro: 'El agua del río entra por la rejilla de la bocatoma, deja la arena en el desarenador y pasa al pozo de succión, de donde la bomba la eleva hasta el tanque. Aquí se fija cuánto se bombea, el tamaño del desarenador y cuánto cuesta la energía.' },
+  { id: 'tuberias', nombre: 'Tuberías', experimento: true, intro: 'La aducción lleva el agua del río al tanque y la distribución la baja hasta las viviendas. El diámetro y el caudal fijan la velocidad, el régimen del flujo (laminar o turbulento) y lo que se pierde por fricción.' },
   { id: 'tanque', nombre: 'Tanque', intro: 'El tanque compensa la diferencia entre lo que entra por bombeo y lo que consume el sector. Con caudales constantes, su nivel sube o baja en línea recta.' },
   { id: 'vivienda', nombre: 'Vivienda', intro: 'La presión en la casa es la altura del agua en el tanque menos lo que se pierde en el camino. Con esa presión sale el chorro del grifo.' },
   { id: 'arroyo', nombre: 'Arroyo', intro: 'Con los aguaceros los arroyos de la ciudad crecen de golpe. El canal trapezoidal, excavado por debajo de la calle, tiene que conducir la crecida sin desbordarse.' },
@@ -60,33 +61,46 @@ const MATERIALES = [
 
 const pulgadas = (mm) => `${fmt(mm / 25.4, 2)} in`;
 
+const TUBOS_EXPERIMENTO = [
+  { valor: 'vidrio', nombre: 'Tubo de vidrio (experimento)' },
+  { valor: 'aduccion', nombre: 'Tubería de aducción del sistema' },
+  { valor: 'distribucion', nombre: 'Tubería de distribución del sistema' },
+];
+
 const CONTROLES = [
   { tab: 'captacion', grupo: 'Bombeo desde el río' },
-  { tab: 'captacion', id: 'Qbombeo', clave: 'Qbombeo', etiqueta: 'Caudal bombeado', unidad: 'L/s', min: 0.5, max: 30, paso: 0.05, dec: 2 },
+  { tab: 'captacion', id: 'Qbombeo', clave: 'Qbombeo', etiqueta: 'Caudal bombeado', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
   { tab: 'captacion', id: 'horasDia', clave: 'horasDia', etiqueta: 'Horas de bombeo al día', unidad: 'h', min: 1, max: 24, paso: 0.5, dec: 1 },
   { tab: 'captacion', id: 'eficiencia', clave: 'eficiencia', etiqueta: 'Eficiencia de la bomba', unidad: '%', min: 40, max: 90, paso: 1, dec: 0, aUI: (v) => v * 100, deUI: (v) => v / 100 },
+  { tab: 'captacion', grupo: 'Desarenador de la bocatoma' },
+  { tab: 'captacion', id: 'desLongitud', clave: 'desLongitud', etiqueta: 'Longitud del desarenador (L)', unidad: 'm', min: 2, max: 15, paso: 0.1, dec: 2 },
+  { tab: 'captacion', id: 'desAncho', clave: 'desAncho', etiqueta: 'Ancho del desarenador (B)', unidad: 'm', min: 0.5, max: 3, paso: 0.05, dec: 2 },
+  { tab: 'captacion', id: 'desProfundidad', clave: 'desProfundidad', etiqueta: 'Profundidad útil (h)', unidad: 'm', min: 0.4, max: 2, paso: 0.05, dec: 2 },
   { tab: 'captacion', grupo: 'Costo de la energía' },
   { tab: 'captacion', id: 'tarifa', clave: 'tarifaKWh', etiqueta: 'Tarifa de energía', unidad: 'COP/kWh', min: 300, max: 1500, paso: 10, dec: 0 },
   { tab: 'captacion', id: 'cargoFijo', clave: 'cargoFijo', etiqueta: 'Cargo fijo mensual', unidad: 'COP', min: 0, max: 500000, paso: 5000, dec: 0 },
 
   { tab: 'tuberias', grupo: 'Aducción: del río al tanque' },
-  { tab: 'tuberias', id: 'Qbombeo2', clave: 'Qbombeo', etiqueta: 'Caudal', unidad: 'L/s', min: 0.5, max: 30, paso: 0.05, dec: 2 },
+  { tab: 'tuberias', id: 'Qbombeo2', clave: 'Qbombeo', etiqueta: 'Caudal', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
   {
-    tab: 'tuberias', id: 'Vaduccion', etiqueta: 'Velocidad del flujo', unidad: 'm/s', min: 0.05, max: 5, paso: 0.01, dec: 2,
+    tab: 'tuberias', id: 'Vaduccion', etiqueta: 'Velocidad del flujo', unidad: 'm/s', min: 0.005, max: 5, paso: 0.001, dec: 3,
     leer: () => M.velocidadMedia(lps(p.Qbombeo), p.Daduccion),
-    escribir: (v) => { p.Qbombeo = limitar(M.m3sAlps(M.caudalDesdeVelocidad(v, p.Daduccion)), 0.5, 30); },
+    escribir: (v) => { p.Qbombeo = limitar(M.m3sAlps(M.caudalDesdeVelocidad(v, p.Daduccion)), 0.1, 30); },
   },
   { tab: 'tuberias', id: 'Daduccion', clave: 'Daduccion', etiqueta: 'Diámetro', unidad: 'mm', min: 50, max: 300, paso: 1, dec: 0, aUI: (v) => v * 1000, deUI: (v) => v / 1000, extra: pulgadas },
   { tab: 'tuberias', id: 'Laduccion', clave: 'Laduccion', etiqueta: 'Longitud', unidad: 'm', min: 100, max: 2000, paso: 10, dec: 0 },
   { tab: 'tuberias', grupo: 'Distribución: del tanque a la vivienda' },
-  { tab: 'tuberias', id: 'Qdemanda', clave: 'Qdemanda', etiqueta: 'Caudal consumido por el sector', unidad: 'L/s', min: 0.5, max: 30, paso: 0.05, dec: 2 },
+  { tab: 'tuberias', id: 'Qdemanda', clave: 'Qdemanda', etiqueta: 'Caudal consumido por el sector', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
   {
-    tab: 'tuberias', id: 'Vdistribucion', etiqueta: 'Velocidad del flujo', unidad: 'm/s', min: 0.05, max: 6, paso: 0.01, dec: 2,
+    tab: 'tuberias', id: 'Vdistribucion', etiqueta: 'Velocidad del flujo', unidad: 'm/s', min: 0.005, max: 6, paso: 0.001, dec: 3,
     leer: () => M.velocidadMedia(lps(p.Qdemanda), p.Ddistribucion),
-    escribir: (v) => { p.Qdemanda = limitar(M.m3sAlps(M.caudalDesdeVelocidad(v, p.Ddistribucion)), 0.5, 30); },
+    escribir: (v) => { p.Qdemanda = limitar(M.m3sAlps(M.caudalDesdeVelocidad(v, p.Ddistribucion)), 0.1, 30); },
   },
   { tab: 'tuberias', id: 'Ddistribucion', clave: 'Ddistribucion', etiqueta: 'Diámetro', unidad: 'mm', min: 25, max: 200, paso: 1, dec: 0, aUI: (v) => v * 1000, deUI: (v) => v / 1000, extra: pulgadas },
   { tab: 'tuberias', id: 'Ldistribucion', clave: 'Ldistribucion', etiqueta: 'Longitud', unidad: 'm', min: 100, max: 2000, paso: 10, dec: 0 },
+  { tab: 'tuberias', contenedor: 'experimento', id: 'expTubo', clave: 'expTubo', etiqueta: 'Qué tubo mostrar', tipo: 'opciones', opciones: TUBOS_EXPERIMENTO },
+  { tab: 'tuberias', contenedor: 'experimento', soloVidrio: true, id: 'expDiametro', clave: 'expDiametro', etiqueta: 'Diámetro del tubo de vidrio', unidad: 'mm', min: 2, max: 50, paso: 0.5, dec: 1, aUI: (v) => v * 1000, deUI: (v) => v / 1000 },
+  { tab: 'tuberias', contenedor: 'experimento', soloVidrio: true, id: 'expVelocidad', clave: 'expVelocidad', etiqueta: 'Velocidad media del agua', unidad: 'm/s', min: 0.005, max: 2, paso: 0.005, dec: 3 },
 
   { tab: 'tanque', grupo: 'Dimensiones' },
   { tab: 'tanque', id: 'Dtanque', clave: 'Dtanque', etiqueta: 'Diámetro del tanque', unidad: 'm', min: 4, max: 20, paso: 0.1, dec: 2 },
@@ -97,15 +111,15 @@ const CONTROLES = [
     leer: () => sim.nivel,
     escribir: (v) => { sim.nivel = limitar(v, 0, p.hMax); },
   },
-  { tab: 'tanque', id: 'Qbombeo3', clave: 'Qbombeo', etiqueta: 'Caudal que entra (bombeo)', unidad: 'L/s', min: 0.5, max: 30, paso: 0.05, dec: 2 },
-  { tab: 'tanque', id: 'Qdemanda2', clave: 'Qdemanda', etiqueta: 'Caudal que sale (consumo)', unidad: 'L/s', min: 0.5, max: 30, paso: 0.05, dec: 2 },
+  { tab: 'tanque', id: 'Qbombeo3', clave: 'Qbombeo', etiqueta: 'Caudal que entra (bombeo)', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
+  { tab: 'tanque', id: 'Qdemanda2', clave: 'Qdemanda', etiqueta: 'Caudal que sale (consumo)', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
 
   { tab: 'vivienda', grupo: 'Grifo' },
   { tab: 'vivienda', id: 'apertura', clave: 'apertura', etiqueta: 'Apertura de la llave', unidad: '%', min: 5, max: 100, paso: 1, dec: 0, aUI: (v) => v * 100, deUI: (v) => v / 100 },
   { tab: 'vivienda', id: 'alturaGrifo', clave: 'alturaGrifo', etiqueta: 'Altura del grifo sobre el terreno', unidad: 'm', min: 0.5, max: 9, paso: 0.1, dec: 2 },
   { tab: 'vivienda', grupo: 'Criterio de servicio' },
   { tab: 'vivienda', id: 'presionMinima', clave: 'presionMinima', etiqueta: 'Presión mínima de referencia', unidad: 'm.c.a.', min: 5, max: 30, paso: 0.5, dec: 1 },
-  { tab: 'vivienda', id: 'Qdemanda3', clave: 'Qdemanda', etiqueta: 'Caudal consumido por el sector', unidad: 'L/s', min: 0.5, max: 30, paso: 0.05, dec: 2 },
+  { tab: 'vivienda', id: 'Qdemanda3', clave: 'Qdemanda', etiqueta: 'Caudal consumido por el sector', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
 
   { tab: 'arroyo', grupo: 'Sección del canal' },
   { tab: 'arroyo', id: 'perimetro', clave: 'perimetro', etiqueta: 'Perímetro mojado disponible (P)', unidad: 'm', min: 2, max: 12, paso: 0.05, dec: 2 },
@@ -167,8 +181,19 @@ function crearPanel() {
       <dl class="metricas"></dl>
       <h3>Modelo matemático</h3>
       <div class="ecuacion"></div>
-      <figure class="grafica"><div class="lienzo"><canvas aria-label="Gráfica de ${t.nombre.toLowerCase()}"></canvas></div><figcaption></figcaption></figure>`;
+      <figure class="grafica"><div class="lienzo"><canvas aria-label="Gráfica de ${t.nombre.toLowerCase()}"></canvas></div><figcaption></figcaption></figure>
+      ${t.extra ? '<figure class="grafica grafica-extra"><div class="lienzo"><canvas aria-label="Segunda gráfica"></canvas></div><figcaption></figcaption></figure>' : ''}
+      ${t.experimento ? `<section class="experimento" aria-labelledby="exp-${t.id}">
+        <h3 id="exp-${t.id}">Laminar o turbulento: experimento de Reynolds</h3>
+        <p class="intro">En 1883 Osborne Reynolds inyectó un hilo de tinta en el eje de un tubo de vidrio. Con poca velocidad la tinta sigue recta (flujo laminar); al aumentarla ondula y se rompe (transición) y, con más, se mezcla en toda la sección (flujo turbulento).</p>
+        <div class="controles"></div>
+        <figure class="animacion"><canvas aria-label="Animación del experimento de Reynolds"></canvas><figcaption></figcaption></figure>
+        <dl class="metricas"></dl>
+        <div class="ecuacion"></div>
+      </section>` : ''}`;
     elFichas.appendChild(f);
+    const graficaExtra = f.querySelector('.grafica-extra');
+    const exp = f.querySelector('.experimento');
     fichas[t.id] = {
       raiz: f,
       controles: f.querySelector('.controles'),
@@ -176,6 +201,15 @@ function crearPanel() {
       ecuacion: f.querySelector('.ecuacion'),
       canvas: f.querySelector('canvas'),
       leyenda: f.querySelector('figcaption'),
+      canvas2: graficaExtra?.querySelector('canvas'),
+      leyenda2: graficaExtra?.querySelector('figcaption'),
+      exp: exp && {
+        controles: exp.querySelector('.controles'),
+        canvas: exp.querySelector('canvas'),
+        leyenda: exp.querySelector('figcaption'),
+        metricas: exp.querySelector('.metricas'),
+        ecuacion: exp.querySelector('.ecuacion'),
+      },
     };
   }
 
@@ -188,7 +222,7 @@ function crearPanel() {
   });
 
   for (const c of CONTROLES) {
-    const destino = fichas[c.tab].controles;
+    const destino = c.contenedor === 'experimento' ? fichas[c.tab].exp.controles : fichas[c.tab].controles;
     if (c.grupo) {
       const h = document.createElement('h3');
       h.textContent = c.grupo;
@@ -218,6 +252,16 @@ function crearPanel() {
       destino.appendChild(div);
       continue;
     }
+    if (c.tipo === 'opciones') {
+      div.innerHTML = `<label for="c-${c.id}">${c.etiqueta}</label>
+        <select id="c-${c.id}">${c.opciones.map((o) => `<option value="${o.valor}">${o.nombre}</option>`).join('')}</select>`;
+      const sel = div.querySelector('select');
+      sel.value = String(p[c.clave]);
+      sel.addEventListener('change', () => { p[c.clave] = sel.value; cambio(); });
+      c.el = { sel, div };
+      destino.appendChild(div);
+      continue;
+    }
     div.innerHTML = `
       <div class="fila">
         <label for="r-${c.id}">${c.etiqueta}</label>
@@ -235,7 +279,7 @@ function crearPanel() {
     };
     numero.addEventListener('change', confirmar);
     numero.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); confirmar(); numero.blur(); } });
-    c.el = { rango, numero, extra: div.querySelector('.extra') };
+    c.el = { rango, numero, extra: div.querySelector('.extra'), div };
     destino.appendChild(div);
   }
 }
@@ -243,7 +287,8 @@ function crearPanel() {
 function sincronizarControles(origen) {
   for (const c of CONTROLES) {
     if (!c.el) continue;
-    if (c.el.sel) { c.el.sel.value = String(p.nManning); continue; }
+    if (c.soloVidrio) c.el.div.hidden = p.expTubo !== 'vidrio';
+    if (c.el.sel) { c.el.sel.value = String(p[c.clave]); continue; }
     const v = leerControl(c);
     const max = valorMax(c);
     c.el.rango.min = c.min;
@@ -293,12 +338,59 @@ function setHTML(el, html) {
   if (el.__html !== html) { el.innerHTML = html; el.__html = html; }
 }
 
+/** Datos del experimento de Reynolds según el tubo elegido (vidrio o una tubería del sistema). */
+function datosExperimento() {
+  let D, V, Re, etiqueta;
+  if (p.expTubo === 'aduccion') {
+    ({ V, Re } = r.aduccion); D = p.Daduccion; etiqueta = 'Aducción';
+  } else if (p.expTubo === 'distribucion') {
+    ({ V, Re } = r.distribucion); D = p.Ddistribucion; etiqueta = 'Distribución';
+  } else {
+    D = p.expDiametro; V = p.expVelocidad; Re = M.reynoldsVelocidad(V, D); etiqueta = 'Tubo de vidrio';
+  }
+  const regimen = M.regimen(Re);
+  const R = D / 2;
+  const a2 = (2 * V) / (R * R);
+  const uEje = regimen === 'laminar' ? 2 * V : (regimen === 'turbulento' ? M.velocidadMaximaTurbulenta(V) : null);
+  const f = M.factorFriccion(Re, D);
+  const vMax = M.redondear(Re < 2000 ? (2000 * M.MU) / (M.RHO * D) : 0, 4);
+  const notas = {
+    laminar: 'Las capas de agua se deslizan unas sobre otras sin mezclarse: la tinta sigue una línea recta y el perfil de velocidad es una parábola, con el doble de la velocidad media en el eje.',
+    'transición': 'El flujo alterna entre ordenado y agitado: llegan ráfagas de remolinos, la tinta ondula y se rompe a ratos. Por eso este tramo no se usa para diseñar.',
+    turbulento: 'Los remolinos mezclan el agua en toda la sección: la tinta se dispersa enseguida y el perfil se aplana (ley de potencia 1/7, con una velocidad en el eje de 1.22 veces la media). Es el régimen de las tuberías reales del sistema.',
+  };
+  return {
+    config: { D, V, Re, regimen, etiqueta },
+    leyenda: 'Corte longitudinal del tubo. La tinta (naranja) sale de la aguja en el eje y los puntos azules marcan el agua; a la derecha, el perfil de velocidad (flechas proporcionales a u/V; la línea punteada es la velocidad media).',
+    metricas: metricas([
+      ['Número de Reynolds', `${fmt(Re, 0)} (${regimen})`, '', regimen === 'laminar' ? 'ok' : (regimen === 'turbulento' ? 'alerta' : 'aviso')],
+      ['Velocidad media', fmt(V, 3), 'm/s'],
+      ['Velocidad en el eje', uEje !== null ? fmt(uEje, 3) : `entre ${fmt(1.22 * V, 3)} y ${fmt(2 * V, 3)}`, 'm/s'],
+      ['Factor de fricción f', fmt(f, 4), ''],
+      ...(Re < 2000 && p.expTubo === 'vidrio' ? [['Velocidad máxima para seguir laminar', fmt(vMax, 4), 'm/s']] : []),
+    ]),
+    ecuacion: [
+      ecu.tipo('Decimales: número de Reynolds'),
+      ecu.formula(`${i('Re')} = ρ${i('VD')} / μ  (laminar < 2000; turbulento > 4000)`),
+      ecu.sust(`${i('Re')} = 997.05 × ${fmt(V, 3)} × ${fmt(D, 4)} / 0.00089 = ${fmt(Re, 0)} → ${regimen}`),
+      ecu.tipo('Ecuación cuadrática: perfil de velocidad laminar'),
+      ecu.formula(`${i('u')}(${i('r')}) = 2${i('V')}(1 − ${i('r')}²/${i('R')}²) = −(2${i('V')}/${i('R')}²)·${i('r')}² + 2${i('V')}`),
+      ecu.sust(`${i('u')}(${i('r')}) = −${fmt(a2, a2 >= 100 ? 0 : 2)}·${i('r')}² + ${fmt(2 * V, 3)};  vértice en el eje: ${i('u')} = ${fmt(2 * V, 3)} m/s;  raíces ${i('r')} = ±${fmt(R, 4)} m (en la pared el agua no se mueve)`),
+      ecu.nota(notas[regimen] + (regimen !== 'laminar' ? ' La parábola solo describe el flujo laminar.' : '')),
+    ].join(''),
+  };
+}
+
 const PINTORES = {
   captacion() {
     const desnivel = p.cotaTanque + sim.nivel - p.cotaRio;
     const c = r.costo;
+    const d = r.desarenador;
+    const dmm = d.dMin * 1000;
+    const hayFlujo = r.Qin > 0;
     return {
       metricas: metricas([
+        ['<b>Bombeo y energía</b>', '', ''],
         ['Altura dinámica de bombeo', fmt(r.alturaBombeo), 'm'],
         ['Desnivel río → superficie del tanque', fmt(desnivel), 'm'],
         ['Pérdida por fricción en la aducción', fmt(r.aduccion.hfReal), 'm'],
@@ -306,6 +398,13 @@ const PINTORES = {
         ['Volumen bombeado al mes', fmt(r.Vmes), 'm³'],
         ['Energía consumida al mes', fmt(c.energia), 'kWh'],
         ['Costo mensual de bombeo', `$\u00a0${fmt(c.costo, 0)}`, 'COP'],
+        ['<b>Desarenador</b>', '', ''],
+        ['Velocidad horizontal V<sub>h</sub> = Q/(B·h)', fmt(d.Vh, 4), 'm/s'],
+        ['Tiempo que tarda el agua en cruzarlo', fmtTiempo(d.t), ''],
+        ['Carga superficial q = Q/(B·L)', fmt(d.q * 1000, 3), 'mm/s'],
+        ['Grano más fino que se queda (Stokes)', hayFlujo ? `${fmt(dmm, 3)} mm` : '—', '', 'ok'],
+        ['Tipo de grano retenido desde ese tamaño', hayFlujo ? d.clase : '—', ''],
+        ['Reynolds del grano (Stokes vale si < 1)', fmt(d.Rep, 3), '', d.Rep < 1 ? '' : 'aviso'],
       ]),
       ecuacion: [
         ecu.tipo('Decimales: volumen mensual'),
@@ -317,6 +416,17 @@ const PINTORES = {
         ecu.sust(`${i('m')} = ${fmt(p.tarifaKWh, 0)} × 997.05 × 9.81 × ${fmt(r.alturaBombeo)} / (${fmt(p.eficiencia)} × 3 600 000) = ${fmt(c.m)} COP/m³`),
         ecu.sust(`${i('C')}(${fmt(r.Vmes)}) = ${fmt(c.m)} × ${fmt(r.Vmes)} + ${fmt(c.b, 0)} = $\u00a0${fmt(c.costo, 0)}`),
         ecu.nota('La pendiente es lo que cuesta subir un metro cúbico hasta el tanque; el intercepto es el cargo fijo que se paga aunque la bomba no funcione. Se convierte el volumen a energía antes de aplicar la tarifa, porque la tarifa está en COP por kWh.'),
+        ecu.tipo('Decimales: velocidad y carga superficial en el desarenador'),
+        ecu.formula(`${i('V')}<sub>h</sub> = ${i('Q')} / (${i('B')} · ${i('h')}),  ${i('t')} = ${i('L')} / ${i('V')}<sub>h</sub>,  ${i('q')} = ${i('Q')} / (${i('B')} · ${i('L')})`),
+        ecu.sust(`${i('V')}<sub>h</sub> = ${fmt(r.Qin, 5)} / (${fmt(p.desAncho)} × ${fmt(p.desProfundidad)}) = ${fmt(d.Vh, 4)} m/s;  ${i('t')} = ${fmt(p.desLongitud)} / ${fmt(d.Vh, 4)} = ${fmt(d.t, 0)} s`),
+        ecu.sust(`${i('q')} = ${fmt(r.Qin, 5)} / (${fmt(p.desAncho)} × ${fmt(p.desLongitud)}) = ${fmt(d.q, 5)} m/s`),
+        ecu.tipo('Ecuación cuadrática: ley de Stokes'),
+        ecu.formula(`${i('v')}<sub>s</sub> = ${i('K')} · ${i('d')}²,  ${i('K')} = ${i('g')}(ρ<sub>s</sub> − ρ) / (18μ)`),
+        ecu.sust(`${i('K')} = 9.81 × (2650 − 997.05) / (18 × 0.00089) = ${fmt(d.K, 0)} 1/(m·s)`),
+        hayFlujo
+          ? ecu.sust(`Se queda si ${i('v')}<sub>s</sub> ≥ ${i('q')}:  ${fmt(d.K, 0)}·${i('d')}² − ${fmt(d.q, 5)} = 0  ⇒  ${i('d')} = √(${fmt(d.q, 5)} / ${fmt(d.K, 0)}) = ${fmt(dmm, 4)} mm`)
+          : '',
+        ecu.nota('Un grano se queda si cae la profundidad h antes de recorrer la longitud L, es decir si v<sub>s</sub> ≥ h·V<sub>h</sub>/L = Q/(B·L): la profundidad se cancela. Al bombear más o acortar el desarenador, la recta sube, corta la parábola más a la derecha y pasa arena más gruesa hacia la bomba. En la escena, los granos más finos que ese tamaño llegan al pozo de succión.'),
       ].join(''),
       leyenda: 'Costo mensual en función del volumen bombeado. La recta corta el eje vertical en el cargo fijo.',
       grafica(g) {
@@ -328,6 +438,24 @@ const PINTORES = {
         ], { x: { min: 0, max: vMax }, y: { min: 0 } });
       },
       ejes: { xTitulo: 'Volumen bombeado (m³/mes)', yTitulo: 'Costo (COP)', formatoX: (v) => fmt(v, 0), formatoY: (v) => fmt(v, 0) },
+      extra: {
+        leyenda: 'Velocidad de caída de los granos según su diámetro (ley de Stokes). La recta es la carga superficial q: los granos cuya velocidad queda por encima de la recta se quedan en el desarenador.',
+        grafica(g) {
+          const col = paleta();
+          const dMax = Math.max(0.1, Math.ceil(dmm * 2.4 * 100) / 100);
+          const pts = Array.from({ length: 61 }, (_, k) => {
+            const dm = (dMax * k) / 60;
+            return { x: dm, y: M.velocidadSedimentacion(dm / 1000) * 1000 };
+          });
+          const qmm = d.q * 1000;
+          actualizarGrafica(g, [
+            serieLinea('vs = K·d²', pts, col.ocre),
+            serieLinea('Carga superficial q', [{ x: 0, y: qmm }, { x: dMax, y: qmm }], col.agua, { punteada: true }),
+            seriePuntos('Grano más fino retenido', hayFlujo ? [{ x: dmm, y: qmm }] : [], col.ok, 5),
+          ], { x: { min: 0, max: dMax }, y: { min: 0, max: Math.max(qmm * 2.2, 0.5) } });
+        },
+        ejes: { xTitulo: 'Diámetro del grano d (mm)', yTitulo: 'Caída vs (mm/s)', formatoX: (v) => fmt(v, 3), formatoY: (v) => fmt(v, 1) },
+      },
     };
   },
 
@@ -372,6 +500,7 @@ const PINTORES = {
         ], { x: { min: 0, max: 30 }, y: { min: 0 } });
       },
       ejes: { xTitulo: 'Caudal (L/s)', yTitulo: 'Pérdida de carga (m)', formatoX: (v) => fmt(v, 0), formatoY: (v) => fmt(v, 1) },
+      experimento: datosExperimento(),
     };
   },
 
@@ -497,6 +626,7 @@ const PINTORES = {
         ['Capacidad con la sección óptima', fmt(c.QcapOptimo), 'm³/s'],
         ['Tirante que necesita la crecida', fmt(c.yNormal), 'm', c.desborde ? 'alerta' : ''],
         ['Velocidad en el canal', fmt(c.vCanal), 'm/s'],
+        ['Régimen del flujo (Re = VR/ν)', `${fmt(c.Re, 0)} (${c.regimen})`, ''],
         ['Alcance del chorro en la compuerta', fmt(c.alcanceCompuerta), 'm'],
       ]),
       ecuacion: [
@@ -511,6 +641,9 @@ const PINTORES = {
         ecu.tipo('Decimales: capacidad con la ecuación de Manning'),
         ecu.formula(`${i('Q')} = (1/${i('n')}) · ${i('A')} · ${i('R')}<sup>2/3</sup> · ${i('S')}<sup>1/2</sup>,  ${i('R')} = ${i('A')}/${i('P')}`),
         ecu.sust(`${i('Q')} = (1/${fmt(p.nManning, 3)}) × ${fmt(c.A)} × ${fmt(R, 3)}<sup>2/3</sup> × ${fmt(p.pendiente, 4)}<sup>1/2</sup> = ${fmt(c.Qcap)} m³/s`),
+        ecu.tipo('Decimales: régimen del flujo en el canal'),
+        ecu.formula(`${i('Re')} = ρ${i('VR')} / μ,  ${i('R')} = ${i('A')} / ${i('P')}  (laminar < 500, turbulento > 2000)`),
+        ecu.sust(`${i('Re')} = 997.05 × ${fmt(c.vCanal)} × ${fmt(c.Rflujo, 3)} / 0.00089 = ${fmt(c.Re, 0)} → ${c.regimen}`),
         ecu.tipo('Ecuación cuadrática: chorro bajo la compuerta'),
         c.vCanal > 0
           ? ecu.sust(`${i('y')}(${i('x')}) = ${fmt(kChorro.a, 4)}${i('x')}² + ${fmt(p.alturaCaida)};  alcance = ${fmt(c.vCanal)} × √(2 × ${fmt(p.alturaCaida)} / 9.81) = ${fmt(c.alcanceCompuerta)} m`)
@@ -546,6 +679,23 @@ function pintarTab(id) {
   if (f.leyenda.textContent !== datos.leyenda) f.leyenda.textContent = datos.leyenda;
   if (!graficas[id] && window.Chart) graficas[id] = crearGrafica(f.canvas, datos.ejes);
   if (graficas[id]) datos.grafica(graficas[id]);
+  pintarExtras(id, datos);
+}
+
+function pintarExtras(id, datos) {
+  const f = fichas[id];
+  if (datos.extra && f.canvas2) {
+    if (f.leyenda2.textContent !== datos.extra.leyenda) f.leyenda2.textContent = datos.extra.leyenda;
+    const k = `${id}-extra`;
+    if (!graficas[k] && window.Chart) graficas[k] = crearGrafica(f.canvas2, datos.extra.ejes);
+    if (graficas[k]) datos.extra.grafica(graficas[k]);
+  }
+  if (datos.experimento && f.exp) {
+    setHTML(f.exp.metricas, datos.experimento.metricas);
+    setHTML(f.exp.ecuacion, datos.experimento.ecuacion);
+    if (f.exp.leyenda.textContent !== datos.experimento.leyenda) f.exp.leyenda.textContent = datos.experimento.leyenda;
+    experimento?.configurar(datos.experimento.config);
+  }
 }
 
 function pintarEstados() {
@@ -601,6 +751,7 @@ function mostrarTab(id) {
   }
   escena?.seleccionar(id);
   pintarTab(id);
+  experimento?.activar(id === 'tuberias');
 }
 
 function seleccionDesdeEscena(id) {
@@ -652,6 +803,7 @@ function bucle(ahora) {
         const datos = PINTORES[tabActiva]();
         setHTML(f.metricas, datos.metricas);
         setHTML(f.ecuacion, datos.ecuacion);
+        if (datos.experimento) pintarExtras(tabActiva, { experimento: datos.experimento });
         if (ahora - ultimaGrafica > 1000 && graficas[tabActiva]) {
           ultimaGrafica = ahora;
           datos.grafica(graficas[tabActiva]);
@@ -665,9 +817,11 @@ function bucle(ahora) {
 
 // ── Arranque ─────────────────────────────────────────────────────────────
 let escena = null;
+let experimento = null;
 
 function iniciar() {
   crearPanel();
+  if (fichas.tuberias.exp) experimento = new ExperimentoReynolds(fichas.tuberias.exp.canvas);
   controlesTiempo();
   const contenedor = document.getElementById('escena');
   escena = new Escena(contenedor, { onSeleccion: seleccionDesdeEscena });

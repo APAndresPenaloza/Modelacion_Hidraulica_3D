@@ -140,6 +140,68 @@ test('Cuadrática: velocidad en el grifo H = (1+K)v²/2g', () => {
   assert.ok(M.velocidadGrifo(20, 0.5) < M.velocidadGrifo(20, 1));
 });
 
+test('Desarenador: velocidad horizontal, tiempo y carga superficial', () => {
+  // Q = 12.5 L/s, B = 1 m, h = 0.8 m, L = 6 m
+  cerca(M.velocidadHorizontal(0.0125, 1, 0.8), 0.015625, 1e-12);   // 0.0125/0.8
+  cerca(M.tiempoRetencion(6, 0.015625), 384, 1e-9);                 // 6/0.015625
+  cerca(M.cargaSuperficial(0.0125, 1, 6), 0.0020833333, 1e-9);     // 0.0125/6
+  // La profundidad se cancela: h·Vh/L = Q/(B·L)
+  cerca(0.8 * M.velocidadHorizontal(0.0125, 1, 0.8) / 6, M.cargaSuperficial(0.0125, 1, 6), 1e-15);
+});
+
+test('Cuadrática: ley de Stokes y grano más fino retenido', () => {
+  // K = 9.81·(2650 − 997.05)/(18·0.00089) = 16 215.44/0.01602 = 1 012 199.7
+  cerca(M.coeficienteStokes(), 1012199.7, 0.5);
+  // vs = K·d²: d = 0.1 mm → 0.010122 m/s; duplicar d cuadruplica vs
+  cerca(M.velocidadSedimentacion(1e-4), 0.0101220, 1e-6);
+  cerca(M.velocidadSedimentacion(2e-4), 4 * M.velocidadSedimentacion(1e-4), 1e-12);
+  // d mínimo = √(q/K) = √(0.0020833/1 012 199.7) = 4.5368e-5 m (0.045 mm)
+  const d = M.diametroMinimoRetenido(0.0125, 1, 6);
+  cerca(d, 4.5368e-5, 1e-8);
+  cerca(M.velocidadSedimentacion(d), M.cargaSuperficial(0.0125, 1, 6), 1e-12);
+  // Más caudal → grano mínimo más grueso (pasa más arena hacia la bomba)
+  assert.ok(M.diametroMinimoRetenido(0.03, 1, 6) > d);
+  // Re de la partícula ≈ 0.106 < 1: la ley de Stokes es válida
+  assert.ok(M.reynoldsParticula(d, M.cargaSuperficial(0.0125, 1, 6)) < 1);
+  assert.equal(M.claseGrano(d), 'limo');
+  assert.equal(M.claseGrano(1e-4), 'arena muy fina');
+  assert.equal(M.claseGrano(2e-4), 'arena fina');
+});
+
+test('Cuadrática: perfil laminar u(r) = 2V(1 − r²/R²) y perfil turbulento 1/7', () => {
+  const R = 0.05, V = 0.4;
+  cerca(M.velocidadLaminar(0, R, V), 0.8, 1e-12);     // vértice: 2V en el eje
+  cerca(M.velocidadLaminar(R, R, V), 0, 1e-12);       // raíz: cero en la pared
+  cerca(M.velocidadMaximaTurbulenta(1), 120 / 98, 1e-12); // 1.2245 V
+  // La velocidad media sobre la sección es V en ambos perfiles
+  const media = (perfil) => {
+    let s = 0;
+    const n = 20000;
+    for (let i = 0; i < n; i++) {
+      const r = ((i + 0.5) / n) * R;
+      s += perfil(r) * 2 * Math.PI * r * (R / n);
+    }
+    return s / (Math.PI * R * R);
+  };
+  cerca(media((r) => M.velocidadLaminar(r, R, V)), V, 1e-6);
+  cerca(media((r) => M.velocidadTurbulenta(r, R, V)), V, 1e-3);
+  // El perfil turbulento es más plano: en r = R/2 conserva más velocidad relativa al eje
+  assert.ok(M.velocidadTurbulenta(R / 2, R, V) / M.velocidadTurbulenta(0, R, V)
+    > M.velocidadLaminar(R / 2, R, V) / M.velocidadLaminar(0, R, V));
+});
+
+test('Reynolds: tubo de vidrio y canal abierto', () => {
+  // 997.05·0.1·0.01/0.00089 = 1 120.3 → laminar; con 0.5 m/s, 5 601.4 → turbulento
+  cerca(M.reynoldsVelocidad(0.1, 0.01), 1120.28, 0.01);
+  assert.equal(M.regimen(M.reynoldsVelocidad(0.1, 0.01)), 'laminar');
+  assert.equal(M.regimen(M.reynoldsVelocidad(0.5, 0.01)), 'turbulento');
+  // Canal: 997.05·3.15·0.5/0.00089 = 1 570.354/0.00089 = 1 764 442.4
+  cerca(M.reynoldsCanal(3.15, 0.5), 1764442.4, 0.1);
+  assert.equal(M.regimenCanal(400), 'laminar');
+  assert.equal(M.regimenCanal(1000), 'transición');
+  assert.equal(M.regimenCanal(5000), 'turbulento');
+});
+
 test('Sistema integrado: escenario base coherente', () => {
   const p = { ...M.PARAMETROS_INICIALES };
   const r = M.calcularSistema(p, 3.2);
@@ -148,6 +210,9 @@ test('Sistema integrado: escenario base coherente', () => {
   assert.ok(r.alturaBombeo > p.cotaTanque - p.cotaRio);
   // El canal base (b = 2.4 m) tiene menos capacidad que el óptimo (b = 3 m)
   assert.ok(r.canal.Qcap < r.canal.QcapOptimo);
+  // El canal es turbulento y el desarenador retiene desde 0.045 mm
+  assert.equal(r.canal.regimen, 'turbulento');
+  cerca(r.desarenador.dMin, 4.5368e-5, 1e-8);
 });
 
 test('Sistema integrado: tanque vacío con déficit → desabastecimiento', () => {

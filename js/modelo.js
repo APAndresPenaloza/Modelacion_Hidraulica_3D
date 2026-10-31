@@ -13,7 +13,9 @@
  *   3. Cuadráticas→ areaCanal() / seccionOptima() del canal trapezoidal
  *                   (vértice de la parábola),
  *                   trayectoriaChorro() / alcanceChorro(),
- *                   velocidadGrifo() (energía: H = (1+K)·v²/2g).
+ *                   velocidadGrifo() (energía: H = (1+K)·v²/2g),
+ *                   velocidadSedimentacion() (Stokes: vs = K·d²) y
+ *                   velocidadLaminar() (perfil u(r) = 2V(1 − r²/R²)).
  */
 
 // ── Constantes físicas: agua a 25 °C (clima cálido de Santa Marta) ──────────
@@ -338,6 +340,108 @@ export function velocidadGrifo(H, apertura, K0 = 10) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// 3b. CAPTACIÓN: DESARENADOR (ley de Stokes)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const RHO_ARENA = 2650;    // densidad de la arena (cuarzo) [kg/m³]
+
+/** Velocidad horizontal en el desarenador Vh = Q/(B·h) [m/s]. */
+export function velocidadHorizontal(Q, B, h) {
+  return Q / (B * h);
+}
+
+/** Tiempo que tarda el agua en recorrer el desarenador t = L/Vh [s]. */
+export function tiempoRetencion(L, Vh) {
+  return Vh > 0 ? L / Vh : Infinity;
+}
+
+/**
+ * Carga superficial q = Q/(B·L) [m/s]. Un grano se queda en el desarenador si cae
+ * la profundidad h antes de recorrer la longitud L: vs ≥ h·Vh/L = Q/(B·L).
+ * La profundidad se cancela: lo que retiene un desarenador depende de su área en planta.
+ */
+export function cargaSuperficial(Q, B, L) {
+  return Q / (B * L);
+}
+
+/** Coeficiente de la ley de Stokes K = g(ρs − ρ)/(18μ) [1/(m·s)]. */
+export function coeficienteStokes(rhoS = RHO_ARENA) {
+  return (G * (rhoS - RHO)) / (18 * MU);
+}
+
+/** Ley de Stokes: velocidad de caída de un grano vs = K·d² (cuadrática en el diámetro) [m/s]. */
+export function velocidadSedimentacion(d, rhoS = RHO_ARENA) {
+  return coeficienteStokes(rhoS) * d * d;
+}
+
+/** Diámetro del grano más fino que se queda: raíz positiva de K·d² − q = 0 [m]. */
+export function diametroMinimoRetenido(Q, B, L, rhoS = RHO_ARENA) {
+  if (Q <= 0) return 0;
+  const { raices } = resolverCuadratica(coeficienteStokes(rhoS), 0, -cargaSuperficial(Q, B, L));
+  return Math.max(...raices);
+}
+
+/** Reynolds de la partícula Re_p = ρ·vs·d/μ; la ley de Stokes vale si Re_p < 1. */
+export function reynoldsParticula(d, vs) {
+  return (RHO * vs * d) / MU;
+}
+
+/** Clase del grano según la escala de Wentworth (d en metros). */
+export function claseGrano(d) {
+  const mm = d * 1000;
+  if (mm < 0.0039) return 'arcilla';
+  if (mm < 0.0625) return 'limo';
+  if (mm < 0.125) return 'arena muy fina';
+  if (mm < 0.25) return 'arena fina';
+  if (mm < 0.5) return 'arena media';
+  if (mm < 1) return 'arena gruesa';
+  if (mm < 2) return 'arena muy gruesa';
+  return 'grava';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3c. RÉGIMEN DEL FLUJO: PERFILES LAMINAR Y TURBULENTO
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Reynolds con la velocidad media Re = ρ·V·D/μ. */
+export function reynoldsVelocidad(V, D) {
+  return (RHO * V * D) / MU;
+}
+
+/**
+ * Perfil laminar de Hagen-Poiseuille: u(r) = 2V·(1 − r²/R²) = −(2V/R²)·r² + 2V.
+ * Parábola que abre hacia abajo: vértice en el eje (u = 2V) y raíces en la pared (r = ±R).
+ */
+export function velocidadLaminar(r, R, V) {
+  return 2 * V * (1 - (r / R) ** 2);
+}
+
+/** Velocidad en el eje de un perfil turbulento de potencia 1/n: umáx = V·(n+1)(2n+1)/(2n²). */
+export function velocidadMaximaTurbulenta(V, n = 7) {
+  return (V * (n + 1) * (2 * n + 1)) / (2 * n * n);
+}
+
+/** Perfil turbulento (ley de potencia 1/7): u(r) = umáx·(1 − |r|/R)^(1/n). Es casi plano en el centro. */
+export function velocidadTurbulenta(r, R, V, n = 7) {
+  return velocidadMaximaTurbulenta(V, n) * Math.pow(Math.max(0, 1 - Math.abs(r) / R), 1 / n);
+}
+
+// En canales abiertos el Reynolds se calcula con el radio hidráulico (Chow, 1994)
+export const RE_CANAL_LAMINAR = 500;
+export const RE_CANAL_TURBULENTO = 2000;
+
+/** Reynolds de un canal abierto Re = ρ·V·R/μ, con R el radio hidráulico. */
+export function reynoldsCanal(V, Rh) {
+  return (RHO * V * Rh) / MU;
+}
+
+export function regimenCanal(Re) {
+  if (Re < RE_CANAL_LAMINAR) return 'laminar';
+  if (Re < RE_CANAL_TURBULENTO) return 'transición';
+  return 'turbulento';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // 4. MODELO INTEGRADO DEL SISTEMA (río → bombeo → tanque → casa; arroyo)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -355,6 +459,14 @@ export const PARAMETROS_INICIALES = Object.freeze({
   horasDia: 18.0,
   tarifaKWh: 950.0,       // COP/kWh (valor de referencia editable)
   cargoFijo: 150000.0,    // COP/mes (valor de referencia editable)
+  // Desarenador de la bocatoma
+  desLongitud: 6.0,       // m
+  desAncho: 1.0,          // m
+  desProfundidad: 0.8,    // m (profundidad útil)
+  // Tubo de vidrio del experimento de Reynolds (pestaña Tuberías)
+  expTubo: 'vidrio',      // 'vidrio' | 'aduccion' | 'distribucion'
+  expDiametro: 0.01,      // m
+  expVelocidad: 0.1,      // m/s
   // Tanque
   Dtanque: 12.0,          // m
   hMax: 5.0,              // m
@@ -427,6 +539,20 @@ export function calcularSistema(p, nivel) {
   const Aflujo = areaTrapecio(p.anchoCanal, yFlujo, zt);
   const vCanal = Aflujo > 0 ? Qsale / Aflujo : 0;
   const alcanceCompuerta = alcanceChorro(p.alturaCaida, vCanal);
+  const Rflujo = yFlujo > 0 ? Aflujo / perimetroTrapecio(p.anchoCanal, yFlujo, zt) : 0;
+  const ReCanal = reynoldsCanal(vCanal, Rflujo);
+
+  // Desarenador: por él pasa todo el caudal bombeado
+  const Vh = velocidadHorizontal(Qin, p.desAncho, p.desProfundidad);
+  const qSup = cargaSuperficial(Qin, p.desAncho, p.desLongitud);
+  const dMin = diametroMinimoRetenido(Qin, p.desAncho, p.desLongitud);
+  const desarenador = {
+    Vh, q: qSup, dMin,
+    t: tiempoRetencion(p.desLongitud, Vh),
+    K: coeficienteStokes(),
+    Rep: reynoldsParticula(dMin, qSup),
+    clase: claseGrano(dMin),
+  };
 
   let estado = 'normal';
   if (Hcasa <= 0) estado = 'sin-agua';
@@ -442,9 +568,11 @@ export function calcularSistema(p, nivel) {
     vGrifo, qGrifo, alcance, pendienteNivel, tLleno, tVacio,
     canal: {
       talud: zt, yDiseno, A: Acanal, Tdiseno, optimo, Qcap, QcapOptimo, yNormal, desborde,
-      Qsale, yFlujo, Aflujo, vCanal, alcanceCompuerta,
+      Qsale, yFlujo, Aflujo, vCanal, alcanceCompuerta, Rflujo, Re: ReCanal,
+      regimen: regimenCanal(ReCanal),
       coef: coeficientesAreaCanal(p.perimetro, zt),
     },
+    desarenador,
     estado,
   };
 }

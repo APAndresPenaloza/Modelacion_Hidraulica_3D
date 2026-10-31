@@ -375,6 +375,27 @@ input[type="range"]::-moz-range-thumb {
 .grafica { margin: 14px 0 8px; }
 .grafica .lienzo { position: relative; height: 210px; }
 .grafica figcaption { font-size: 12.5px; color: var(--tinta-2); margin-top: 6px; }
+.grafica-extra { margin-top: 22px; }
+
+/* Experimento de Reynolds (pestaña Tuberías) */
+.experimento { margin-top: 10px; }
+.experimento h3:first-of-type {
+  border-top: 1px solid var(--linea);
+  padding-top: 14px;
+  margin-top: 20px;
+}
+.experimento .control[hidden] { display: none; }
+.animacion { margin: 10px 0 12px; }
+.animacion canvas {
+  display: block;
+  width: 100%;
+  height: 190px;
+  border: 1px solid var(--linea);
+  border-radius: var(--r-medio);
+  background: var(--panel);
+}
+.animacion figcaption { font-size: 12.5px; color: var(--tinta-2); margin-top: 6px; }
+.experimento .metricas { margin-bottom: 10px; }
 
 .pie {
   margin-top: auto;

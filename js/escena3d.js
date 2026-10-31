@@ -24,8 +24,10 @@ const Z_CANAL = 21;
 const X_CANAL_INI = -22;
 const X_CANAL_FIN = 44;
 // El arroyo va excavado bajo la llanura urbana: el borde del canal queda a ras
-// de la calle y el agua corre por debajo del nivel del terreno.
-const NIVEL_CALLE = 6.0;              // cota del terreno a lo largo del arroyo (escena)
+// de la calle y el agua corre por debajo del nivel del terreno. La llanura queda
+// a cota 4 m, apenas por encima del río (cota 2.50 m): el río corre casi lleno
+// entre sus orillas y su lámina queda más alta que el fondo del canal.
+const NIVEL_CALLE = 4.0 * VS;         // cota del terreno a lo largo del arroyo (escena)
 const CORONA = NIVEL_CALLE + 0.1;     // borde superior del canal (bordillo del andén)
 const BORDO_LIBRE = 0.3;              // altura libre sobre el tirante de diseño [m]
 const ESPESOR = 0.35;                 // espesor del revestimiento de concreto [m]
@@ -34,6 +36,45 @@ const MURO_FOSA = 1.3;                // espesor de los muros del pozo de disipa
 const FOSA_X0 = X_CANAL_FIN;          // el canal descarga en el pozo
 const FOSA_X1 = 55;
 const X_COMPUERTA = X_CANAL_FIN - 1.4;
+
+// ── Captación: bocatoma lateral → desarenador → pozo de succión ─────────────
+// El interior está alineado con la malla del terreno (vértices en enteros) para
+// que el borde del recorte quede escondido dentro de los muros de 1.1 de espesor.
+const Y_RIO = 2.5 * VS;               // lámina del río (cota 2.50 m)
+const CAP = {
+  xi0: -35, xi1: -32,                 // interior (oeste → este)
+  zi0: -12, zi1: -4,                  // interior (aguas arriba → aguas abajo)
+  muro: 1.1,
+  tope: 2.3,                          // corona de los muros (0.8 sobre el río: se ve el interior)
+  base: -1.2,
+  zRej0: -11.7, zRej1: -10.7,         // vano de la rejilla en el muro del río
+  yRej0: 0.95, yRej1: 1.95,
+  zDes0: -10.4, zDes1: -5.4,          // tramo del desarenador
+  zVert: -5.4, eVert: 0.25,           // vertedero de salida
+  pisoDes: -0.3, pisoPozo: -0.8,
+  aguaDes: Y_RIO - 0.05,              // lámina en la entrada y el desarenador
+  aguaPozo: Y_RIO - 0.25,             // lámina en el pozo de succión
+  xSuc: -33.5, zSuc: -4.55,           // tubería de succión dentro del pozo
+};
+CAP.x0 = CAP.xi0 - CAP.muro; CAP.x1 = CAP.xi1 + CAP.muro;
+CAP.z0 = CAP.zi0 - CAP.muro; CAP.z1 = CAP.zi1 + CAP.muro;
+CAP.crestaVert = CAP.aguaDes - 0.12;
+
+// Franja del río donde se mueven los trazadores de la corriente
+const RIO = { x0: -46.0, x1: CAP.x0 - 0.4, z0: -55, z1: 72 };
+
+function cortarCaptacion(x, z, y) {
+  const e = 1e-6;
+  if (x >= CAP.xi0 - e && x <= CAP.xi1 + e && z >= CAP.zi0 - e && z <= CAP.zi1 + e) return Math.min(y, CAP.base - 0.3);
+  // Explanación alrededor de la estructura, un poco por debajo de la corona de los muros
+  const m = 1.6;
+  if (x > CAP.x0 - m && x < CAP.x1 + m && z > CAP.z0 - m && z < CAP.z1 + m) return Math.min(y, CAP.tope - 0.12);
+  return y;
+}
+
+function dentroDeCaptacion(x, z) {
+  return x > CAP.x0 && x < CAP.x1 && z > CAP.z0 && z < CAP.z1;
+}
 
 // Excavación vigente (la define construirCanal según la sección)
 let CORTE = null;
@@ -113,7 +154,8 @@ function interp(claves, x) {
 
 // Perfil del corredor del acueducto (z ≈ 0) y de la llanura urbana (z > 16)
 const PERFIL = [[-110, 6], [-52, 3.4], [-44, 0.3], [-36, 0.3], [-33, 2.2], [-26, 6], [-7, 22.8], [6, 22.8], [17, 10], [24, 7.2], [44, 7.2], [57, -1.5], [120, -1.5]];
-const LLANURA = [[-110, 6], [-52, 3.4], [-44, 0.3], [-36, 0.3], [-32, 3.4], [-27, 6], [57, 6], [63, -1.5], [120, -1.5]];
+// La llanura queda a nivel de la calle, con orillas bajas a lado y lado del río
+const LLANURA = [[-110, 3.6], [-54, 2.6], [-46.5, 2.0], [-44, 0.3], [-36, 0.3], [-33.5, 2.0], [-30, NIVEL_CALLE], [57, NIVEL_CALLE], [63, -1.5], [120, -1.5]];
 
 export function alturaTerreno(x, z) {
   const a = interp(PERFIL, x);
@@ -126,9 +168,9 @@ export function alturaTerreno(x, z) {
   // Ondulación suave lejos de las estructuras
   const banda = Math.max(suave(1 - Math.max(0, Math.abs(z - Z_CANAL) - 8) / 6), 0.85 * suave(1 - Math.abs(z) / 6));
   y += (1 - banda) * 0.45 * Math.sin(x * 0.31 + z * 0.17) * Math.cos(z * 0.23 - x * 0.05);
-  // Excavación del arroyo canalizado y del pozo de disipación
+  // Excavación del arroyo canalizado, del pozo de disipación y de la captación
   if (CORTE) y = aplicarCorte(x, z, y);
-  return y;
+  return cortarCaptacion(x, z, y);
 }
 
 function texturaAgua() {
@@ -177,45 +219,239 @@ function caja(w, h, d, color, opciones = {}) {
 
 const fmt = (x, d = 2) => (Number.isFinite(x) ? M.redondear(x, d).toFixed(d) : '—');
 
+/**
+ * Intensidad visual de la turbulencia: 0 en laminar, sube suavemente en la
+ * transición y vale 1 en régimen turbulento pleno.
+ */
+export function mezclaTurbulenta(Re, desde = M.RE_LAMINAR, hasta = M.RE_TURBULENTO) {
+  return suave((Re - desde) / (hasta - desde));
+}
+
+/** Número aleatorio con media 0 y desviación ≈ 1 (suma de uniformes). */
+function azar() {
+  return (Math.random() + Math.random() + Math.random() - 1.5) * 2;
+}
+
+const COLOR_TINTA = 0xe2572f;
+
 // ── Partículas que recorren una curva (flujo dentro de una tubería) ────────
+// Cada partícula ocupa un punto de la sección (radio relativo ρ y ángulo θ) y
+// avanza con el perfil de velocidad del régimen: parábola en laminar
+// (u = 2V(1 − ρ²)) y perfil plano 1/7 en turbulento, donde además se mezcla
+// por la sección. Un hilo de tinta inyectado en el eje lo hace visible: sigue
+// recto en laminar y se dispersa en turbulento, como en el experimento de Reynolds.
 class FlujoTubo {
-  constructor(padre, max = 260) {
+  constructor(padre, max = 560) {
     this.max = max;
     this.mesh = new THREE.InstancedMesh(
       new THREE.SphereGeometry(1, 8, 6),
-      new THREE.MeshBasicMaterial({ color: COLOR.aguaClara }),
+      new THREE.MeshBasicMaterial({ color: 0xffffff }),
       max,
     );
     this.mesh.frustumCulled = false;
     this.mesh.count = 0;
     this.aux = new THREE.Object3D();
+    this.desv = new THREE.Vector3();
+    this.beta = 1;
     padre.add(this.mesh);
   }
 
-  setCurva(curva, radio) {
+  setCurva(curva, radioTubo, radioParticula) {
     this.curva = curva;
     this.largo = curva.getLength();
-    this.n = Math.min(this.max, Math.floor(this.largo / 0.85));
-    this.u = new Float32Array(this.n).map((_, i) => i / this.n);
-    this.radio = radio;
-    this.mesh.count = this.n;
-    this.paso(0, 0);
+    this.segmentos = 400;
+    this.marcos = curva.computeFrenetFrames(this.segmentos, false);
+    const n = (this.n = Math.min(this.max, Math.floor(this.largo / 0.3)));
+    this.u = new Float32Array(n).map(() => Math.random());
+    this.rho = new Float32Array(n).map(() => Math.sqrt(Math.random()) * 0.97);
+    this.th = new Float32Array(n).map(() => Math.random() * Math.PI * 2);
+    this.tinta = new Uint8Array(n).map(() => (Math.random() < 0.3 ? 1 : 0));
+    const agua = new THREE.Color(COLOR.aguaClara);
+    const tinta = new THREE.Color(COLOR_TINTA);
+    for (let i = 0; i < n; i++) {
+      if (this.tinta[i]) this.rho[i] = Math.random() * 0.08;
+      this.mesh.setColorAt(i, this.tinta[i] ? tinta : agua);
+    }
+    this.mesh.instanceColor.needsUpdate = true;
+    this.radioUtil = Math.max(0, radioTubo - radioParticula);
+    this.radio = radioParticula;
+    this.mesh.count = n;
+    this.paso(0, 1);
+  }
+
+  /** beta: 0 laminar → 1 turbulento (ver mezclaTurbulenta). */
+  setRegimen(beta) {
+    // Al pasar a laminar se inyecta tinta nueva en el eje, como al abrir la aguja
+    if (beta < 0.05 && this.beta >= 0.05 && this.tinta) {
+      for (let i = 0; i < this.n; i++) if (this.tinta[i]) this.rho[i] = Math.random() * 0.08;
+    }
+    this.beta = beta;
   }
 
   paso(dt, velocidad) {
     if (!this.curva) return;
-    const du = (velocidad * VIS_FLUJO * dt) / this.largo;
-    const visible = velocidad > 1e-4;
+    const visible = velocidad > 1e-5;
     this.mesh.visible = visible;
     if (!visible) return;
+    const b = this.beta;
+    // Velocidad de dibujo: proporcional a V, con un mínimo visible para flujos muy lentos
+    const v = Math.min(velocidad, 4);
+    const vVis = (v >= 0.25 ? v : 0.25 * Math.pow(v / 0.25, 0.35)) * VIS_FLUJO;
+    const ruido = b * 1.7 * Math.sqrt(Math.max(dt, 0));   // caminata aleatoria en la sección
+    const { tangents: T, normals: N, binormals: B } = this.marcos;
+    const p = this.aux.position;
     for (let i = 0; i < this.n; i++) {
-      this.u[i] = (this.u[i] + du) % 1;
-      this.curva.getPointAt(this.u[i], this.aux.position);
-      this.aux.scale.setScalar(this.radio);
+      let r = this.rho[i];
+      const lam = 2 * (1 - r * r);
+      const tur = 1.2245 * Math.pow(1 - Math.min(r, 0.999), 1 / 7);
+      this.u[i] += (vVis * (lam * (1 - b) + tur * b) * dt) / this.largo;
+      if (this.u[i] >= 1) {
+        this.u[i] -= 1;
+        if (this.tinta[i]) this.rho[i] = r = Math.random() * 0.08;  // la tinta se vuelve a inyectar en el eje
+      }
+      if (ruido > 0) {
+        let a = r * Math.cos(this.th[i]) + ruido * azar();
+        let c = r * Math.sin(this.th[i]) + ruido * azar();
+        let rr = Math.hypot(a, c);
+        if (rr > 0.97) { const k = (1.94 - rr) / rr; a *= k; c *= k; rr = Math.hypot(a, c); }
+        this.rho[i] = r = rr;
+        this.th[i] = Math.atan2(c, a);
+      }
+      this.curva.getPointAt(this.u[i], p);
+      const k = Math.min(this.segmentos, Math.round(this.u[i] * this.segmentos));
+      const off = r * this.radioUtil;
+      this.desv.copy(N[k]).multiplyScalar(Math.cos(this.th[i]) * off).addScaledVector(B[k], Math.sin(this.th[i]) * off);
+      p.add(this.desv);
+      void T;
+      this.aux.scale.setScalar(this.radio * (this.tinta[i] ? 1.15 : 1));
       this.aux.updateMatrix();
       this.mesh.setMatrixAt(i, this.aux.matrix);
     }
     this.mesh.instanceMatrix.needsUpdate = true;
+  }
+}
+
+// ── Captación: agua y granos de arena que entran por la rejilla ─────────────
+// El agua cruza la cámara de entrada, recorre el desarenador, rebosa por el
+// vertedero al pozo de succión y entra a la coladera. Cada grano cae con su
+// velocidad de Stokes: se queda si toca el fondo antes del vertedero.
+const DIAMETROS_ARENA = [0.00003, 0.00006, 0.00012, 0.00025];   // m: limo, limo grueso, arena muy fina, arena fina
+const COLORES_ARENA = [0x6e5a3c, 0x93703f, 0xbf8a3f, 0xe3b155];
+
+class FlujoCaptacion {
+  constructor(padre, nAgua = 90, porClase = 16) {
+    this.nAgua = nAgua;
+    this.nArena = porClase * DIAMETROS_ARENA.length;
+    this.agua = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 6, 5), new THREE.MeshBasicMaterial({ color: COLOR.aguaClara }), nAgua);
+    this.arena = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 6, 5), new THREE.MeshBasicMaterial({ color: 0xffffff }), this.nArena);
+    for (const m of [this.agua, this.arena]) { m.frustumCulled = false; padre.add(m); }
+    this.clase = new Uint8Array(this.nArena).map((_, i) => i % DIAMETROS_ARENA.length);
+    const col = new THREE.Color();
+    for (let i = 0; i < this.nArena; i++) this.arena.setColorAt(i, col.setHex(COLORES_ARENA[this.clase[i]]));
+    this.arena.instanceColor.needsUpdate = true;
+    const n = nAgua + this.nArena;
+    // Estado: fase (0 entrada, 1 desarenador, 2 vertedero, 3 pozo, 4 asentado), avance, posición
+    this.fase = new Uint8Array(n);
+    this.t = new Float32Array(n);
+    this.s = new Float32Array(n);
+    this.f = new Float32Array(n);
+    this.x = new Float32Array(n);
+    this.z0 = new Float32Array(n);
+    this.prof = new Float32Array(n);
+    for (let i = 0; i < n; i++) this.reiniciar(i, Math.random() * 3);
+    this.aux = new THREE.Object3D();
+    this.tPaso = 7;
+    this.q = 1;
+    this.activosAgua = nAgua;
+  }
+
+  reiniciar(i, retraso = 0) {
+    this.fase[i] = 0;
+    this.t[i] = -retraso;
+    this.s[i] = 0;
+    this.f[i] = Math.random() * 0.15;
+    this.x[i] = CAP.xi0 + 0.25 + Math.random() * (CAP.xi1 - CAP.xi0 - 0.5);
+    this.z0[i] = CAP.zRej0 + 0.1 + Math.random() * (CAP.zRej1 - CAP.zRej0 - 0.2);
+    this.prof[i] = 0.05 + Math.random() * 0.5;
+  }
+
+  /** tPasoReal: tiempo de retención [s]; q: carga superficial [m/s]; Q: caudal [m³/s]. */
+  configurar(tPasoReal, q, Q) {
+    this.tPaso = Math.min(16, Math.max(2.2, 0.02 * tPasoReal));
+    this.q = q;
+    this.Q = Q;
+    this.activosAgua = Math.round(this.nAgua * Math.min(1, 0.3 + Q / 0.03));
+  }
+
+  paso(dt) {
+    const activo = this.Q > 0;
+    this.agua.visible = this.arena.visible = activo;
+    if (!activo) return;
+    const p = this.aux.position;
+    const lecho = CAP.pisoDes + 0.12;
+    const total = this.nAgua + this.nArena;
+    this.agua.count = this.activosAgua;
+    for (let i = 0; i < total; i++) {
+      const esArena = i >= this.nAgua;
+      if (!esArena && i >= this.activosAgua) continue;
+      this.t[i] += dt;
+      if (this.t[i] < 0) { p.set(0, -50, 0); this.fijar(i, esArena, p); continue; }
+      const ySup = CAP.aguaDes - 0.04;
+      switch (this.fase[i]) {
+        case 0: { // de la rejilla hacia el inicio del desarenador
+          const a = Math.min(1, this.t[i] / 1.0);
+          p.set(CAP.xi0 + (this.x[i] - CAP.xi0) * a, ySup - (esArena ? this.f[i] * 0.4 : this.prof[i]), this.z0[i] + (CAP.zDes0 - this.z0[i]) * a);
+          if (a >= 1) { this.fase[i] = 1; this.t[i] = 0; }
+          break;
+        }
+        case 1: { // recorrido del desarenador: avance horizontal y caída de Stokes
+          this.s[i] += dt / this.tPaso;
+          let y = ySup - this.prof[i];
+          if (esArena) {
+            const vs = M.velocidadSedimentacion(DIAMETROS_ARENA[this.clase[i - this.nAgua]]);
+            this.f[i] += (dt / this.tPaso) * (vs / this.q);
+            y = ySup - Math.min(1, this.f[i]) * (ySup - lecho);
+            if (this.f[i] >= 1 && this.s[i] < 1) { this.fase[i] = 4; this.t[i] = 0; }
+          }
+          p.set(this.x[i], y, CAP.zDes0 + Math.min(1, this.s[i]) * (CAP.zVert - CAP.zDes0));
+          if (this.fase[i] === 1 && this.s[i] >= 1) { this.fase[i] = 2; this.t[i] = 0; }
+          break;
+        }
+        case 2: { // rebose sobre el vertedero
+          const a = Math.min(1, this.t[i] / 0.5);
+          p.set(this.x[i], CAP.crestaVert + 0.06 - a * a * 0.35, CAP.zVert + a * (CAP.eVert + 0.25));
+          if (a >= 1) { this.fase[i] = 3; this.t[i] = 0; }
+          break;
+        }
+        case 3: { // dentro del pozo, hacia la coladera
+          const a = Math.min(1, this.t[i] / 1.3);
+          const zA = CAP.zVert + CAP.eVert + 0.25;
+          p.set(this.x[i] + (CAP.xSuc - this.x[i]) * a, CAP.aguaPozo - 0.25 - a * (CAP.aguaPozo - CAP.pisoPozo - 0.75), zA + (CAP.zSuc - zA) * a);
+          if (a >= 1) this.reiniciar(i);
+          break;
+        }
+        default: { // grano asentado en el lecho
+          p.set(this.x[i], lecho, CAP.zDes0 + Math.min(1, this.s[i]) * (CAP.zVert - CAP.zDes0));
+          if (this.t[i] > 1.4) this.reiniciar(i, Math.random() * 0.8);
+        }
+      }
+      this.fijar(i, esArena, p);
+    }
+    this.agua.instanceMatrix.needsUpdate = true;
+    this.arena.instanceMatrix.needsUpdate = true;
+  }
+
+  fijar(i, esArena, p) {
+    if (esArena) {
+      const k = i - this.nAgua;
+      this.aux.scale.setScalar(0.05 + 0.018 * this.clase[k]);
+      this.aux.updateMatrix();
+      this.arena.setMatrixAt(k, this.aux.matrix);
+    } else {
+      this.aux.scale.setScalar(0.075);
+      this.aux.updateMatrix();
+      this.agua.setMatrixAt(i, this.aux.matrix);
+    }
   }
 }
 
@@ -338,9 +574,12 @@ export class Escena {
       canal: this.grupo('arroyo'),
     };
     this.construirBomba();
+    this.construirCaptacion();
 
     this.flujoAduccion = new FlujoTubo(this.scene);
     this.flujoDistribucion = new FlujoTubo(this.scene);
+    this.flujoCaptacion = new FlujoCaptacion(this.scene);
+    this.particulasRio();
     this.chorroGrifo = new Chorro(this.scene, 70, 0.06);
     this.chorroCompuerta = new Chorro(this.scene, 420, 0.12);
     this.particulasCanal();
@@ -419,7 +658,7 @@ export class Escena {
       else c.copy(verdeOsc).lerp(roca, Math.min(1, (y - 28) / 10));
       const ciudad = suave((z - 10) / 6) * suave((x + 27) / 3) * (1 - suave((x - 56) / 3));
       if (ciudad > 0) c.lerp(urbano, ciudad * 0.75);
-      if (dentroDelCanal(x, z)) c.copy(concreto);
+      if (dentroDelCanal(x, z) || dentroDeCaptacion(x, z)) c.copy(concreto);
       const ruido = 0.94 + 0.06 * Math.sin(x * 1.7 + z * 2.3) * Math.cos(x * 0.9 - z * 1.3);
       colores[i * 3] = c.r * ruido;
       colores[i * 3 + 1] = c.g * ruido;
@@ -456,12 +695,72 @@ export class Escena {
     this.scene.add(mar);
   }
 
+  // Corriente del río: trazadores que bajan desde la Sierra (+z), más rápidos en el
+  // centro del cauce; los que pasan junto a la rejilla son captados por la bocatoma.
+  particulasRio() {
+    const n = (this.nRio = 300);
+    this.rioPart = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(1, 6, 4),
+      new THREE.MeshBasicMaterial({ color: 0xeaf7fb, transparent: true, opacity: 0.8 }),
+      n,
+    );
+    this.rioPart.frustumCulled = false;
+    this.rioX = new Float32Array(n);
+    this.rioZ = new Float32Array(n);
+    for (let i = 0; i < n; i++) this.nacerEnRio(i, true);
+    this.scene.add(this.rioPart);
+  }
+
+  nacerEnRio(i, enCualquierParte = false) {
+    this.rioX[i] = RIO.x0 + Math.random() * (RIO.x1 - RIO.x0);
+    this.rioZ[i] = enCualquierParte ? RIO.z0 + Math.random() * (RIO.z1 - RIO.z0) : RIO.z0 + Math.random() * 6;
+  }
+
+  pasoRio(dt) {
+    const aux = this.auxRio || (this.auxRio = new THREE.Object3D());
+    const xc = (RIO.x0 + RIO.x1) / 2;
+    const medio = (RIO.x1 - RIO.x0) / 2;
+    const Q = this.r ? this.r.Qin : 0;
+    // Franja junto a la orilla que alcanza a entrar por la rejilla (crece con el bombeo)
+    const xCapta = CAP.x0 - 0.5 - 2.4 * Math.min(1, Q / 0.03);
+    const zRej = (CAP.zRej0 + CAP.zRej1) / 2;
+    const ruido = 0.9 * Math.sqrt(dt);
+    for (let i = 0; i < this.nRio; i++) {
+      let x = this.rioX[i];
+      let z = this.rioZ[i];
+      const s = (x - xc) / medio;
+      const v = 2.4 * (0.35 + 0.65 * Math.max(0, 1 - s * s));
+      if (Q > 0 && x > xCapta && z > zRej - 4.5 && z < zRej + 0.3) {
+        // Atraída hacia el vano de la rejilla
+        const dx = CAP.x0 - 0.12 - x;
+        const dz = zRej - z;
+        const d = Math.hypot(dx, dz) || 1;
+        x += (dx / d) * 1.6 * dt;
+        z += (dz / d) * 1.6 * dt + v * 0.25 * dt;
+        if (d < 0.35) { this.nacerEnRio(i); continue; }
+      } else {
+        z += v * dt;
+        x += ruido * azar() * 0.5;
+        x = Math.min(RIO.x1, Math.max(RIO.x0, x));
+      }
+      if (z > RIO.z1) { this.nacerEnRio(i); continue; }
+      this.rioX[i] = x;
+      this.rioZ[i] = z;
+      aux.position.set(x, Y_RIO + 0.03, z);
+      aux.scale.set(0.09, 0.03, 0.22);
+      aux.updateMatrix();
+      this.rioPart.setMatrixAt(i, aux.matrix);
+    }
+    this.rioPart.instanceMatrix.needsUpdate = true;
+  }
+
   // ── Captación y bombeo ────────────────────────────────────────────────
   construirBomba() {
     const g = this.grupos.bomba;
     const y0 = alturaTerreno(X_BOMBA, 0);
-    const losa = caja(5.2, 0.5, 4.2, COLOR.concreto);
-    losa.position.set(X_BOMBA, y0 + 0.1, 0);
+    // Plataforma de concreto apoyada en la orilla (su borde oeste baja hasta el terreno)
+    const losa = caja(5.2, 2.1, 4.2, COLOR.concreto);
+    losa.position.set(X_BOMBA, y0 + 0.35 - 1.05, 0);
     g.add(losa);
     // Cobertizo abierto: techo sobre cuatro columnas para ver la bomba
     for (const [dx, dz] of [[-2.3, -1.8], [2.3, -1.8], [-2.3, 1.8], [2.3, 1.8]]) {
@@ -491,6 +790,69 @@ export class Escena {
     }
     this.volante.position.set(X_BOMBA + 1.8, y0 + 1.0, 0);
     g.add(voluta, motor, this.volante);
+  }
+
+  /**
+   * Bocatoma lateral: el agua del río entra por una rejilla, pasa al desarenador
+   * (donde se asienta la arena), rebosa por un vertedero al pozo de succión y de
+   * ahí la toma la bomba. Es estática; lo que cambia con el caudal son las partículas.
+   */
+  construirCaptacion() {
+    const g = this.grupos.captacion = this.grupo('captacion');
+    const concreto = new THREE.MeshStandardMaterial({ color: COLOR.concreto, roughness: 0.88 });
+    const bloque = (x0, x1, y0, y1, z0, z1, material = concreto) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, y1 - y0, z1 - z0), material);
+      m.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      g.add(m);
+      return m;
+    };
+    const C = CAP;
+    // Muro del río con el vano de la rejilla
+    bloque(C.x0, C.xi0, C.base, C.tope, C.z0, C.zRej0);
+    bloque(C.x0, C.xi0, C.base, C.tope, C.zRej1, C.z1);
+    bloque(C.x0, C.xi0, C.base, C.yRej0, C.zRej0, C.zRej1);
+    bloque(C.x0, C.xi0, C.yRej1, C.tope, C.zRej0, C.zRej1);
+    // Muros de la orilla, aguas arriba y aguas abajo
+    bloque(C.xi1, C.x1, C.base, C.tope, C.z0, C.z1);
+    bloque(C.xi0, C.xi1, C.base, C.tope, C.z0, C.zi0);
+    bloque(C.xi0, C.xi1, C.base, C.tope, C.zi1, C.z1);
+    // Fondos: cámara de entrada y desarenador, vertedero y pozo de succión (más hondo)
+    bloque(C.xi0, C.xi1, C.base, C.pisoDes, C.zi0, C.zVert);
+    bloque(C.xi0, C.xi1, C.base, C.crestaVert, C.zVert, C.zVert + C.eVert);
+    bloque(C.xi0, C.xi1, C.base, C.pisoPozo, C.zVert + C.eVert, C.zi1);
+    // Lecho de arena acumulada: más grueso al comienzo, donde caen los granos gruesos
+    const arena = new THREE.MeshStandardMaterial({ color: 0xc8a46b, roughness: 1 });
+    bloque(C.xi0 + 0.02, C.xi1 - 0.02, C.pisoDes, C.pisoDes + 0.16, C.zDes0, C.zDes0 + 1.8, arena);
+    bloque(C.xi0 + 0.02, C.xi1 - 0.02, C.pisoDes, C.pisoDes + 0.07, C.zDes0 + 1.8, C.zVert - 0.02, arena);
+    // Rejilla: marco y barrotes en la cara del río
+    const acero = new THREE.MeshStandardMaterial({ color: COLOR.metal, roughness: 0.45, metalness: 0.55 });
+    const xr = C.x0 - 0.03;
+    bloque(xr - 0.04, xr + 0.04, C.yRej0 - 0.06, C.yRej0, C.zRej0, C.zRej1, acero);
+    bloque(xr - 0.04, xr + 0.04, C.yRej1, C.yRej1 + 0.06, C.zRej0, C.zRej1, acero);
+    for (let z = C.zRej0 + 0.06; z < C.zRej1 - 0.03; z += 0.11) {
+      bloque(xr - 0.025, xr + 0.025, C.yRej0, C.yRej1, z - 0.018, z + 0.018, acero);
+    }
+    // Láminas de agua: en el vano, la entrada y el desarenador al nivel casi del río;
+    // en el pozo, más abajo después del vertedero
+    const agua = new THREE.MeshStandardMaterial({ color: COLOR.agua, roughness: 0.2, transparent: true, opacity: 0.34, depthWrite: false });
+    const lamina = (x0, x1, z0, z1, y) => {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, z1 - z0), agua);
+      m.rotation.x = -Math.PI / 2;
+      m.position.set((x0 + x1) / 2, y, (z0 + z1) / 2);
+      g.add(m);
+    };
+    lamina(C.x0, C.xi0, C.zRej0, C.zRej1, C.aguaDes);
+    lamina(C.xi0, C.xi1, C.zi0, C.zVert, C.aguaDes);
+    lamina(C.xi0, C.xi1, C.zVert + C.eVert, C.zi1, C.aguaPozo);
+    // Barandas sobre los muros
+    const yb = C.tope;
+    for (const [x0, x1, z0, z1] of [[C.x0 + 0.3, C.x0 + 0.36, C.z0 + 0.3, C.z1 - 0.3], [C.x1 - 0.36, C.x1 - 0.3, C.z0 + 0.3, C.z1 - 0.3]]) {
+      bloque(x0, x1, yb + 0.85, yb + 0.9, z0, z1, acero);
+      for (let z = z0; z <= z1 + 1e-6; z += (z1 - z0) / 5) bloque(x0, x1, yb, yb + 0.9, z - 0.03, z + 0.03, acero);
+    }
+    this.indexar(g);
   }
 
   // ── Tanque ────────────────────────────────────────────────────────────
@@ -551,10 +913,15 @@ export class Escena {
     const r = this.radioTanque();
     const tope = 38 * VS + this.p.hMax * VS;
     const yB = alturaTerreno(X_BOMBA, 0) + 1.0;
+    // Tubería de succión: nace en la coladera, dentro del pozo, sube y entra a la bomba
+    const ySuc = CAP.pisoPozo + 0.55;
     const pts = [
-      new THREE.Vector3(X_RIO - 1, 1.0, 0),
-      new THREE.Vector3(X_RIO + 3, 1.25, 0),
-      new THREE.Vector3(X_RIO + 6.2, alturaTerreno(X_RIO + 6.2, 0) + 0.6, 0),
+      new THREE.Vector3(CAP.xSuc, ySuc, CAP.zSuc),
+      new THREE.Vector3(CAP.xSuc, CAP.aguaPozo, CAP.zSuc),
+      new THREE.Vector3(CAP.xSuc, CAP.tope + 0.55, CAP.zSuc),
+      new THREE.Vector3(CAP.xSuc + 0.15, yB - 0.12, CAP.zSuc + 0.75),
+      new THREE.Vector3(CAP.xSuc + 0.6, yB, -2.0),
+      new THREE.Vector3(X_BOMBA - 1.4, yB, -0.35),
       new THREE.Vector3(X_BOMBA - 0.4, yB, 0),
       new THREE.Vector3(X_BOMBA + 2.6, yB, 0),
     ];
@@ -570,9 +937,16 @@ export class Escena {
     );
     this.curvaAduccion = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
     const rad = this.p.Daduccion * ESC_TUBO;
-    const tubo = new THREE.Mesh(new THREE.TubeGeometry(this.curvaAduccion, 320, rad, 14, false), this.materialTubo());
+    const tubo = new THREE.Mesh(new THREE.TubeGeometry(this.curvaAduccion, 360, rad, 14, false), this.materialTubo());
     g.add(tubo);
-    this.flujoAduccion.setCurva(this.curvaAduccion, Math.max(0.07, rad * 0.45));
+    // Coladera (válvula de pie) en la boca de la succión
+    const coladera = new THREE.Mesh(
+      new THREE.CylinderGeometry(rad * 1.7, rad * 1.7, 0.42, 18),
+      new THREE.MeshStandardMaterial({ color: 0x3d4a50, roughness: 0.6, metalness: 0.4 }),
+    );
+    coladera.position.set(CAP.xSuc, ySuc - 0.15, CAP.zSuc);
+    g.add(coladera);
+    this.flujoAduccion.setCurva(this.curvaAduccion, rad, Math.max(0.045, rad * 0.24));
     this.indexar(g);
   }
 
@@ -609,7 +983,7 @@ export class Escena {
     const rad = this.p.Ddistribucion * ESC_TUBO;
     const tubo = new THREE.Mesh(new THREE.TubeGeometry(this.curvaDistribucion, 320, rad, 14, false), this.materialTubo());
     g.add(tubo);
-    this.flujoDistribucion.setCurva(this.curvaDistribucion, Math.max(0.06, rad * 0.45));
+    this.flujoDistribucion.setCurva(this.curvaDistribucion, rad, Math.max(0.04, rad * 0.24));
     this.indexar(g);
   }
 
@@ -876,6 +1250,7 @@ export class Escena {
   crearEtiquetas() {
     const defs = [
       ['rio', 'captacion', 'Río (captación)'],
+      ['bocatoma', 'captacion', 'Bocatoma y desarenador'],
       ['bomba', 'captacion', 'Estación de bombeo'],
       ['aduccion', 'tuberias', 'Aducción'],
       ['tanque', 'tanque', 'Tanque de almacenamiento'],
@@ -949,8 +1324,8 @@ export class Escena {
 
   // ── Cámara y tamaño ───────────────────────────────────────────────────
   encuadrar() {
-    this.controles.target.set(2, 9, 7);
-    this.camara.position.set(-36, 52, 86);
+    this.controles.target.set(1, 8.5, 6);
+    this.camara.position.set(-45, 60, 100);
     this.controles.update();
   }
 
@@ -1030,6 +1405,13 @@ export class Escena {
       cantidad: Math.round(120 + 300 * Math.min(1, c.Qsale / 20)),
     });
 
+    // Régimen del flujo en cada conducto y comportamiento del desarenador
+    this.flujoAduccion.setRegimen(mezclaTurbulenta(r.aduccion.Re));
+    this.flujoDistribucion.setRegimen(mezclaTurbulenta(r.distribucion.Re));
+    this.betaCanal = mezclaTurbulenta(c.Re, M.RE_CANAL_LAMINAR, M.RE_CANAL_TURBULENTO);
+    const des = r.desarenador;
+    this.flujoCaptacion.configurar(des.t, des.q, r.Qin);
+
     // Línea piezométrica: bombeo → superficie del tanque → vivienda
     const rT = this.radioTanque();
     const tope = Math.min(70, (p.cotaRio + r.alturaBombeo) * VS);
@@ -1052,12 +1434,14 @@ export class Escena {
     // Etiquetas
     const V = (x, y, z) => new THREE.Vector3(x, y, z);
     const nivelCasa = r.estado === 'normal' ? 'ok' : (r.estado === 'baja-presion' ? 'aviso' : 'alerta');
-    this.etiqueta('rio', `Cota ${fmt(p.cotaRio)} m`, 'ok', V(X_RIO, 4.6, -34));
+    this.etiqueta('rio', `Cota ${fmt(p.cotaRio)} m`, 'ok', V(X_RIO - 1, 3.2, 14));
     this.etiqueta('bomba', `${fmt(p.Qbombeo)} L/s, H = ${fmt(r.alturaBombeo)} m`, 'ok', V(X_BOMBA, alturaTerreno(X_BOMBA, 0) + 5.2, 0));
-    this.etiqueta('aduccion', `V = ${fmt(r.aduccion.V)} m/s`, 'ok', V(-16, alturaTerreno(-16, 0) + 2.8, 0));
+    const textoBocatoma = r.Qin > 0 ? `Retiene granos ≥ ${fmt(des.dMin * 1000, 3)} mm` : 'Sin caudal';
+    this.etiqueta('bocatoma', textoBocatoma, 'ok', V(-34, 8, -19));
+    this.etiqueta('aduccion', `V = ${fmt(r.aduccion.V)} m/s · ${r.aduccion.regimen}`, 'ok', V(-16, alturaTerreno(-16, 0) + 2.8, 0));
     const pct = (nivel / p.hMax) * 100;
     this.etiqueta('tanque', `${fmt(nivel)} m, ${fmt(r.volumen)} m³ (${fmt(pct, 0)} %)`, r.vacio ? 'alerta' : 'ok', V(0, base + p.hMax * VS + 2.6, 0));
-    this.etiqueta('distribucion', `V = ${fmt(r.distribucion.V)} m/s`, 'ok', V(18, alturaTerreno(18, 0.6) + 2.6, 0.6));
+    this.etiqueta('distribucion', `V = ${fmt(r.distribucion.V)} m/s · ${r.distribucion.regimen}`, 'ok', V(18, alturaTerreno(18, 0.6) + 2.6, 0.6));
     const textoCasa = r.Hcasa > 0 ? `${fmt(r.Hcasa)} m.c.a., ${fmt(r.qGrifo * 1000)} L/s` : 'Sin agua en el grifo';
     this.etiqueta('casa', textoCasa, nivelCasa, V(X_CASA, 7.2 + Math.max(3.0, p.alturaGrifo + 1.4) + 3.4, Z_CASA));
     const textoCanal = c.desborde ? `Desborde: ${fmt(p.Qcrecida)} > ${fmt(c.Qcap)} m³/s` : `${fmt(p.Qcrecida)} de ${fmt(c.Qcap)} m³/s`;
@@ -1071,9 +1455,11 @@ export class Escena {
     this.controles.update();
     if (this.r && this.p) {
       const r = this.r;
-      this.texRio.offset.y -= dt * 0.08;
+      this.texRio.offset.y += dt * 0.08;               // el río baja de la Sierra hacia +z
       this.texMar.offset.x += dt * 0.006;
       this.volante.rotation.x += dt * Math.min(30, r.Qin * 1000 * 0.9);
+      this.pasoRio(dt);
+      this.flujoCaptacion.paso(dt);
       this.flujoAduccion.paso(dt, r.Qin > 0 ? r.aduccion.V : 0);
       const vDist = r.Hcasa > 0 ? r.distribucion.V : 0;
       this.flujoDistribucion.paso(dt, vDist);
@@ -1094,8 +1480,14 @@ export class Escena {
     const n = Math.round(this.nCanal * Math.min(1, 0.25 + c.Qsale / 15));
     this.canalPart.count = n;
     this.canalPart.visible = c.vCanal > 0.01;
+    // En régimen turbulento las partículas se mezclan en la vertical y a lo ancho
+    const ruido = (this.betaCanal ?? 1) * 0.5 * Math.sqrt(dt);
     for (let i = 0; i < n; i++) {
-      this.cpX[i] = (this.cpX[i] + avance * (0.8 + 0.4 * this.cpY[i])) % 1;
+      this.cpX[i] = (this.cpX[i] + avance * (0.75 + 0.5 * Math.sqrt(this.cpY[i]))) % 1;
+      if (ruido > 0) {
+        this.cpY[i] = Math.min(1, Math.abs(this.cpY[i] + ruido * azar() * 0.6));
+        this.cpZ[i] = Math.max(-0.5, Math.min(0.5, this.cpZ[i] + ruido * azar() * 0.4));
+      }
       const h = 0.05 + this.cpY[i] * Math.max(0.02, yAgua - 0.1);
       const ancho = b + 2 * zt * h;                 // ancho del trapecio a esa altura
       aux.position.set(
