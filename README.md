@@ -110,13 +110,6 @@ y abrir `http://localhost:8000`. Para correr las pruebas del modelo (requiere No
 npm test
 ```
 
-## Publicar en GitHub Pages
-
-1. Crear un repositorio público en GitHub, por ejemplo `simulador-hidrico-3d`.
-2. Subir todo el contenido de esta carpeta a la rama `main` (con `git push` o arrastrando los archivos en la página del repositorio).
-3. En el repositorio: **Settings → Pages → Build and deployment**, elegir **Deploy from a branch**, rama `main`, carpeta `/ (root)` y guardar.
-4. A los pocos minutos queda publicado en `https://USUARIO.github.io/simulador-hidrico-3d/`.
-
 ## Valores de referencia
 
 La tarifa de energía (950 COP/kWh), el cargo fijo, la presión mínima de servicio (15 m.c.a.), la presión estática máxima (60 m.c.a.), los factores k1 y k2, la dotación, las pérdidas técnicas, los límites de velocidad y las dimensiones del catálogo de tuberías son valores editables de referencia. Antes de la sustentación conviene contrastarlos con la tarifa vigente del operador de energía y con el Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017).
