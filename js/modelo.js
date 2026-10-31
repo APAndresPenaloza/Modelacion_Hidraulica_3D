@@ -465,6 +465,7 @@ export const PARAMETROS_INICIALES = Object.freeze({
   desProfundidad: 0.8,    // m (profundidad útil)
   // Tubo de vidrio del experimento de Reynolds (pestaña Tuberías)
   expTubo: 'vidrio',      // 'vidrio' | 'aduccion' | 'distribucion'
+  expVista: 'lineas',     // 'lineas' (líneas de corriente) | 'tinta' (hilo de tinta)
   expDiametro: 0.01,      // m
   expVelocidad: 0.1,      // m/s
   // Tanque

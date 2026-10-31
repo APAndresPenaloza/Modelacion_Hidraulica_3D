@@ -61,6 +61,11 @@ const MATERIALES = [
 
 const pulgadas = (mm) => `${fmt(mm / 25.4, 2)} in`;
 
+const VISTAS_EXPERIMENTO = [
+  { valor: 'lineas', nombre: 'Líneas de corriente' },
+  { valor: 'tinta', nombre: 'Hilo de tinta (experimento de Reynolds)' },
+];
+
 const TUBOS_EXPERIMENTO = [
   { valor: 'vidrio', nombre: 'Tubo de vidrio (experimento)' },
   { valor: 'aduccion', nombre: 'Tubería de aducción del sistema' },
@@ -98,6 +103,7 @@ const CONTROLES = [
   },
   { tab: 'tuberias', id: 'Ddistribucion', clave: 'Ddistribucion', etiqueta: 'Diámetro', unidad: 'mm', min: 25, max: 200, paso: 1, dec: 0, aUI: (v) => v * 1000, deUI: (v) => v / 1000, extra: pulgadas },
   { tab: 'tuberias', id: 'Ldistribucion', clave: 'Ldistribucion', etiqueta: 'Longitud', unidad: 'm', min: 100, max: 2000, paso: 10, dec: 0 },
+  { tab: 'tuberias', contenedor: 'experimento', id: 'expVista', clave: 'expVista', etiqueta: 'Cómo verlo', tipo: 'opciones', opciones: VISTAS_EXPERIMENTO },
   { tab: 'tuberias', contenedor: 'experimento', id: 'expTubo', clave: 'expTubo', etiqueta: 'Qué tubo mostrar', tipo: 'opciones', opciones: TUBOS_EXPERIMENTO },
   { tab: 'tuberias', contenedor: 'experimento', soloVidrio: true, id: 'expDiametro', clave: 'expDiametro', etiqueta: 'Diámetro del tubo de vidrio', unidad: 'mm', min: 2, max: 50, paso: 0.5, dec: 1, aUI: (v) => v * 1000, deUI: (v) => v / 1000 },
   { tab: 'tuberias', contenedor: 'experimento', soloVidrio: true, id: 'expVelocidad', clave: 'expVelocidad', etiqueta: 'Velocidad media del agua', unidad: 'm/s', min: 0.005, max: 2, paso: 0.005, dec: 3 },
@@ -360,8 +366,10 @@ function datosExperimento() {
     turbulento: 'Los remolinos mezclan el agua en toda la sección: la tinta se dispersa enseguida y el perfil se aplana (ley de potencia 1/7, con una velocidad en el eje de 1.22 veces la media). Es el régimen de las tuberías reales del sistema.',
   };
   return {
-    config: { D, V, Re, regimen, etiqueta },
-    leyenda: 'Corte longitudinal del tubo. La tinta (naranja) sale de la aguja en el eje y los puntos azules marcan el agua; a la derecha, el perfil de velocidad (flechas proporcionales a u/V; la línea punteada es la velocidad media).',
+    config: { D, V, Re, regimen, etiqueta, vista: p.expVista },
+    leyenda: p.expVista === 'lineas'
+      ? 'Corte longitudinal del tubo con las líneas de corriente vistas por un observador que viaja con el agua: rectas y paralelas en laminar, onduladas en la transición y enrolladas en remolinos en turbulento. A la derecha, el perfil de velocidad (flechas proporcionales a u/V; la línea punteada es la velocidad media).'
+      : 'Corte longitudinal del tubo. La tinta (naranja) sale de la aguja en el eje y los puntos azules marcan el agua; a la derecha, el perfil de velocidad (flechas proporcionales a u/V; la línea punteada es la velocidad media).',
     metricas: metricas([
       ['Número de Reynolds', `${fmt(Re, 0)} (${regimen})`, '', regimen === 'laminar' ? 'ok' : (regimen === 'turbulento' ? 'alerta' : 'aviso')],
       ['Velocidad media', fmt(V, 3), 'm/s'],
@@ -376,7 +384,7 @@ function datosExperimento() {
       ecu.tipo('Ecuación cuadrática: perfil de velocidad laminar'),
       ecu.formula(`${i('u')}(${i('r')}) = 2${i('V')}(1 − ${i('r')}²/${i('R')}²) = −(2${i('V')}/${i('R')}²)·${i('r')}² + 2${i('V')}`),
       ecu.sust(`${i('u')}(${i('r')}) = −${fmt(a2, a2 >= 100 ? 0 : 2)}·${i('r')}² + ${fmt(2 * V, 3)};  vértice en el eje: ${i('u')} = ${fmt(2 * V, 3)} m/s;  raíces ${i('r')} = ±${fmt(R, 4)} m (en la pared el agua no se mueve)`),
-      ecu.nota(notas[regimen] + (regimen !== 'laminar' ? ' La parábola solo describe el flujo laminar.' : '')),
+      ecu.nota(notas[regimen] + (regimen !== 'laminar' ? ' La parábola solo describe el flujo laminar.' : '') + ' Algunos textos fijan el límite laminar en Re = 2300; aquí se usa 2000 (Mott y Untener, 2015).'),
     ].join(''),
   };
 }

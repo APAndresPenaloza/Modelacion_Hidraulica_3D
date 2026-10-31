@@ -39,7 +39,8 @@ export class ExperimentoReynolds {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
-    this.config = { V: 0.1, D: 0.01, Re: 1120, regimen: 'laminar', etiqueta: 'Tubo de vidrio' };
+    this.config = { V: 0.1, D: 0.01, Re: 1120, regimen: 'laminar', etiqueta: 'Tubo de vidrio', vista: 'lineas' };
+    this.vortices = [];
     this.beta = 0;
     this.transicion = 0;
     this.activo = false;
@@ -103,7 +104,15 @@ export class ExperimentoReynolds {
         eta: (Math.random() * 2 - 1) * 0.96,
       }));
       this.anchoPrevio = w;
+      // Remolinos en dos filas, con giro opuesto (como en una estela)
+      const n = 6;
+      this.vortices = Array.from({ length: n }, (_, k) => ({
+        x: this.x0 + ((k + 0.5) / n) * (this.x1 - this.x0),
+        fila: k % 2 ? 1 : -1,
+        fase: Math.random() * 6,
+      }));
     }
+    this.rc = 0.38 * this.R;
     if (!this.raf) this.dibujar();
   }
 
@@ -172,6 +181,87 @@ export class ExperimentoReynolds {
       mover(p, 1.15);
     }
     this.tinta = this.tinta.filter((p) => p.x < this.x1 - 1).slice(-900);
+    // Los remolinos viajan con el flujo, crecen y se debilitan
+    const largoV = this.x1 - this.x0 + 2 * this.rc;
+    for (const v of this.vortices) {
+      v.x += S * 0.85 * dt;
+      if (v.x > this.x1 + this.rc) { v.x -= largoV; v.fase = Math.random() * 6; }
+      const intensidad = b * this.rafaga(v.x, this.t, S) * (0.75 + 0.25 * Math.sin(this.t * 1.3 + v.fase));
+      v.G = -v.fila * intensidad * 11 * S * this.rc;
+      v.y = this.yc + v.fila * 0.42 * this.R + 0.12 * this.R * Math.sin(this.t * 0.9 + v.fase) * b;
+    }
+    this.S = S;
+  }
+
+  /**
+   * Velocidad (px/s) en (x, y), vista desde un observador que viaja con los
+   * remolinos: perfil medio + remolinos de Lamb-Oseen. En laminar no hay
+   * remolinos y las líneas de corriente son rectas paralelas.
+   */
+  campo(x, y) {
+    const S = this.S || this.velocidadVisual();
+    const b = this.beta;
+    const eta = (y - this.yc) / this.R;
+    let u = S * factorPerfil(eta, b) - b * 0.85 * S;
+    let v = 0;
+    if (b > 0) {
+      const rc2 = this.rc * this.rc;
+      for (const vo of this.vortices) {
+        if (!vo.G) continue;
+        const dx = x - vo.x;
+        const dy = y - vo.y;
+        const r2 = dx * dx + dy * dy + 1e-6;
+        const f = (vo.G / (2 * Math.PI * r2)) * (1 - Math.exp(-r2 / rc2));
+        u += -dy * f;
+        v += dx * f;
+      }
+    }
+    return [u, v];
+  }
+
+  /** Líneas de corriente: se trazan hacia adelante y hacia atrás desde semillas en filas. */
+  dibujarLineas(g, color) {
+    const { x0, x1, yc, R } = this;
+    const filas = 13;
+    const cols = Math.max(4, Math.round((x1 - x0) / 55));
+    const paso = 2.2;
+    const pasos = 40;
+    g.save();
+    g.beginPath();
+    g.rect(x0, yc - R, x1 - x0, 2 * R);
+    g.clip();
+    g.strokeStyle = color;
+    g.lineWidth = 1.4;
+    g.globalAlpha = 0.85;
+    const trazar = (x, y, sentido) => {
+      const pts = [];
+      for (let k = 0; k < pasos; k++) {
+        const [u, v] = this.campo(x, y);
+        const m = Math.hypot(u, v);
+        if (m < 1e-3) break;
+        x += (sentido * paso * u) / m;
+        y += (sentido * paso * v) / m;
+        if (y < yc - R + 1 || y > yc + R - 1 || x < x0 - 4 || x > x1 + 4) break;
+        pts.push(x, y);
+      }
+      return pts;
+    };
+    for (let i = 0; i < filas; i++) {
+      const y0 = yc + (-0.92 + (1.84 * i) / (filas - 1)) * R;
+      for (let j = 0; j < cols; j++) {
+        const xs = x0 + ((j + 0.5) / cols) * (x1 - x0);
+        const atras = trazar(xs, y0, -1);
+        const adelante = trazar(xs, y0, 1);
+        g.beginPath();
+        for (let k = atras.length - 2; k >= 0; k -= 2) {
+          if (k === atras.length - 2) g.moveTo(atras[k], atras[k + 1]); else g.lineTo(atras[k], atras[k + 1]);
+        }
+        if (!atras.length) g.moveTo(xs, y0); else g.lineTo(xs, y0);
+        for (let k = 0; k < adelante.length; k += 2) g.lineTo(adelante[k], adelante[k + 1]);
+        g.stroke();
+      }
+    }
+    g.restore();
   }
 
   dibujar() {
@@ -190,6 +280,9 @@ export class ExperimentoReynolds {
     g.fillRect(x0, yc - R, x1 - x0, 2 * R);
     g.globalAlpha = 1;
 
+    if (this.config.vista === 'lineas') {
+      this.dibujarLineas(g, agua);
+    } else {
     // Trazadores
     g.fillStyle = agua;
     g.globalAlpha = 0.55;
@@ -207,6 +300,7 @@ export class ExperimentoReynolds {
       g.fill();
     }
     g.globalAlpha = 1;
+    }
 
     // Paredes de vidrio
     g.strokeStyle = tinta2;
@@ -217,7 +311,8 @@ export class ExperimentoReynolds {
       g.lineTo(x1, yc + s * (R + 1.5));
       g.stroke();
     }
-    // Aguja de tinta
+    // Aguja de tinta (solo en la vista del hilo de tinta)
+    if (this.config.vista !== 'lineas') {
     g.strokeStyle = tinta2;
     g.lineWidth = 2;
     g.beginPath();
@@ -229,6 +324,7 @@ export class ExperimentoReynolds {
     g.beginPath();
     g.arc(this.xAguja - 10, yc - R - 16, 4, 0, Math.PI * 2);
     g.fill();
+    }
 
     // Perfil de velocidad a la derecha: flechas proporcionales a u/V
     const xe = x1 + 14;
