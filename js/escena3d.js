@@ -16,10 +16,8 @@ const ESC_TUBO = 2.2;     // exageración visual del diámetro de las tuberías
 const VIS_FLUJO = 5;      // unidades por segundo por cada m/s de velocidad real
 const X_RIO = -40;
 const X_BOMBA = -30.5;
-const X_CASA = 32;
-const Z_CASA = -1;
-const Z_FRENTE_CASA = Z_CASA + 2.5;
-const X_GRIFO = X_CASA - 1.8;
+// Red de distribución: entrada del barrio, calle de la principal (z = zP) y zona de los ramales
+const RED = { xE: 21.5, zP: 4.3, x1: 23.5, x2: 45, zFin: -11.5 };
 const Z_CANAL = 21;
 const X_CANAL_INI = -22;
 const X_CANAL_FIN = 44;
@@ -205,6 +203,13 @@ function liberar(obj) {
     }
     if (o.isCSS2DObject && o.element.parentNode) o.element.parentNode.removeChild(o.element);
   });
+}
+
+function caja2(w, h, d, color) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshStandardMaterial({ color, roughness: 0.85 }));
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
 }
 
 function caja(w, h, d, color, opciones = {}) {
@@ -515,9 +520,10 @@ class Chorro {
 }
 
 export class Escena {
-  constructor(contenedor, { onSeleccion } = {}) {
+  constructor(contenedor, { onSeleccion, onCasa } = {}) {
     this.contenedor = contenedor;
     this.onSeleccion = onSeleccion || (() => {});
+    this.onCasa = onCasa || (() => {});
     this.claves = {};
     this.etiquetas = {};
     this.tabActiva = null;
@@ -570,6 +576,7 @@ export class Escena {
       aduccion: this.grupo('tuberias'),
       tanque: this.grupo('tanque'),
       distribucion: this.grupo('tuberias'),
+      red: this.grupo('red'),
       casa: this.grupo('vivienda'),
       canal: this.grupo('arroyo'),
     };
@@ -578,6 +585,7 @@ export class Escena {
 
     this.flujoAduccion = new FlujoTubo(this.scene);
     this.flujoDistribucion = new FlujoTubo(this.scene);
+    this.flujoAcometida = new FlujoTubo(this.scene, 160);
     this.flujoCaptacion = new FlujoCaptacion(this.scene);
     this.particulasRio();
     this.chorroGrifo = new Chorro(this.scene, 70, 0.06);
@@ -790,6 +798,10 @@ export class Escena {
     }
     this.volante.position.set(X_BOMBA + 1.8, y0 + 1.0, 0);
     g.add(voluta, motor, this.volante);
+    // Piloto de estado sobre el techo: verde encendida, rojo apagada
+    this.luzBomba = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16, 12), new THREE.MeshStandardMaterial({ color: 0x2f7d5b, emissive: 0x2f7d5b, emissiveIntensity: 0.9 }));
+    this.luzBomba.position.set(X_BOMBA, y0 + 4.0, 0);
+    g.add(this.luzBomba);
   }
 
   /**
@@ -899,6 +911,19 @@ export class Escena {
     );
     this.aguaTanque.position.set(0, base, 0);
     g.add(this.aguaTanque);
+    // Interruptores de nivel: anillo y flotador de parada (rojo) y de arranque (verde)
+    const anillo = (color) => {
+      const grupo = new THREE.Group();
+      const m = new THREE.Mesh(new THREE.TorusGeometry(r + 0.04, 0.06, 6, 48), new THREE.MeshBasicMaterial({ color }));
+      m.rotation.x = Math.PI / 2;
+      const flot = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 8), new THREE.MeshStandardMaterial({ color, roughness: 0.5 }));
+      flot.position.set(r * 0.75, 0, r * 0.4);
+      grupo.add(m, flot);
+      g.add(grupo);
+      return grupo;
+    };
+    this.interruptorParada = anillo(0xc0422a);
+    this.interruptorArranque = anillo(0x2f7d5b);
     this.indexar(g);
   }
 
@@ -951,7 +976,30 @@ export class Escena {
   }
 
   alturaGrifoEscena() {
-    return 7.2 + this.p.alturaGrifo;
+    return this.cg.y0 + this.p.alturaGrifo;
+  }
+
+  // ── Trazado de la red en la escena (esquemático y comprimido) ──────────
+  /** Posiciones de la red: principal hacia el este por la calle sur, ramales hacia el norte. */
+  trazadoRed() {
+    const N = Math.round(this.p.nRamales);
+    const K = Math.round(this.p.nViviendas);
+    const xR = (j) => RED.x1 + ((j - 0.5) / N) * (RED.x2 - RED.x1);
+    const paso = (RED.zP - 1.6 - RED.zFin) / K;
+    const zC = (k) => RED.zP - 1.6 - (k - 0.5) * paso;
+    return { N, K, xR, zC, paso, ancho: Math.min(4.2, ((RED.x2 - RED.x1) / N) * 0.62), fondo: Math.min(3.4, paso * 0.78) };
+  }
+
+  /** Geometría de la vivienda de análisis (se recalcula al cambiar de vivienda o de diseño). */
+  geometriaCasa() {
+    const t = this.trazadoRed();
+    const id = this.r?.casa?.id || '1-1';
+    const [j, k] = id.split('-').map(Number);
+    const x = t.xR(Math.min(j, t.N)) + 0.9 + t.ancho / 2;
+    const z = t.zC(Math.min(k, t.K));
+    const y0 = Math.max(...[[-1, -1], [1, -1], [-1, 1], [1, 1]].map(([a, b]) => alturaTerreno(x + (a * t.ancho) / 2, z + (b * t.fondo) / 2)));
+    this.cg = { id, j, k, x, z, w: t.ancho, d: t.fondo, y0, frente: z + t.fondo / 2, xGrifo: x - t.ancho * 0.28 };
+    return this.cg;
   }
 
   construirDistribucion() {
@@ -965,99 +1013,242 @@ export class Escena {
       new THREE.Vector3(r + 0.8, base + 0.35, zT),
       new THREE.Vector3(r + 2.0, alturaTerreno(r + 2.0, zT) + 0.4, zT),
     ];
-    for (let x = r + 3.5; x < X_CASA - 5; x += 2) {
-      pts.push(new THREE.Vector3(x, alturaTerreno(x, zT) + 0.45, zT));
-    }
-    const yC = alturaTerreno(X_CASA - 4, Z_FRENTE_CASA) + 0.35;
-    const zP = Z_FRENTE_CASA + 0.45;
+    for (let x = r + 3.5; x < RED.xE - 2.5; x += 2) pts.push(new THREE.Vector3(x, alturaTerreno(x, zT) + 0.45, zT));
+    const yE = alturaTerreno(RED.xE, RED.zP) + 0.35;
     pts.push(
-      new THREE.Vector3(X_CASA - 4.4, yC, zT + 0.3),
-      new THREE.Vector3(X_CASA - 3.8, yC, zP - 0.2),
-      new THREE.Vector3(X_CASA - 3.3, yC, zP),
-      new THREE.Vector3(X_GRIFO - 0.5, yC, zP),
-      new THREE.Vector3(X_GRIFO - 0.05, yC + 0.3, zP),
-      new THREE.Vector3(X_GRIFO, this.alturaGrifoEscena() - 0.35, zP),
-      new THREE.Vector3(X_GRIFO, this.alturaGrifoEscena(), zP),
+      new THREE.Vector3(RED.xE - 1.6, alturaTerreno(RED.xE - 1.6, zT + 1) + 0.4, zT + 0.6),
+      new THREE.Vector3(RED.xE - 0.6, yE, RED.zP - 0.8),
+      new THREE.Vector3(RED.xE, yE, RED.zP),
     );
     this.curvaDistribucion = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
     const rad = this.p.Ddistribucion * ESC_TUBO;
-    const tubo = new THREE.Mesh(new THREE.TubeGeometry(this.curvaDistribucion, 320, rad, 14, false), this.materialTubo());
-    g.add(tubo);
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(this.curvaDistribucion, 320, rad, 14, false), this.materialTubo()));
     this.flujoDistribucion.setCurva(this.curvaDistribucion, rad, Math.max(0.04, rad * 0.24));
     this.indexar(g);
   }
 
-  // ── Vivienda con grifo exterior ────────────────────────────────────────
+  /** Red de distribución: principal, ramales, válvulas, hidrante, acometidas, medidores y viviendas. */
+  construirRed() {
+    const g = this.grupos.red;
+    g.children.slice().forEach((o) => { g.remove(o); liberar(o); });
+    const p = this.p;
+    const r = this.r;
+    const t = this.trazadoRed();
+    const e = r.especs;
+    const yT = (x, z) => alturaTerreno(x, z) + 0.3;
+    const tuboRecto = (a, b, rad, material) => {
+      const curva = new THREE.LineCurve3(a, b);
+      const m = new THREE.Mesh(new THREE.TubeGeometry(curva, 8, rad, 10, false), material);
+      g.add(m);
+      return m;
+    };
+    const tuboPorTerreno = (x0, z0, x1, z1, rad, material, n = 12) => {
+      const pts = Array.from({ length: n + 1 }, (_, i) => {
+        const x = x0 + ((x1 - x0) * i) / n;
+        const z = z0 + ((z1 - z0) * i) / n;
+        return new THREE.Vector3(x, yT(x, z), z);
+      });
+      const m = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), n * 4, rad, 10, false), material);
+      g.add(m);
+      return m;
+    };
+    const azul = new THREE.MeshStandardMaterial({ color: 0x2a78d6, roughness: 0.35, transparent: true, opacity: 0.85 });
+    const azulApagado = new THREE.MeshStandardMaterial({ color: 0x8aa7b5, roughness: 0.6, transparent: true, opacity: 0.55 });
+    const concreto = new THREE.MeshStandardMaterial({ color: COLOR.concreto, roughness: 0.9 });
+    const metalAzul = new THREE.MeshStandardMaterial({ color: 0x1f5fb0, roughness: 0.4, metalness: 0.3 });
+    const rP = Math.max(0.09, e.Principal.DE * ESC_TUBO);
+    const rR = Math.max(0.07, e.Ramal.DE * ESC_TUBO);
+    const rA = Math.max(0.035, e.Acometida.DE * ESC_TUBO);
+    const xFin = t.xR(t.N) + (p.hidrante ? 3 : 0.5);
+    // Principal por la calle
+    tuboPorTerreno(RED.xE, RED.zP, xFin, RED.zP, rP, azul, 24);
+    // Caja con válvula de compuerta
+    const valvula = (x, z, cerrada = false, eje = 'x') => {
+      const y = yT(x, z);
+      const cuerpo = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.5, 14), metalAzul);
+      cuerpo.rotation.z = eje === 'x' ? Math.PI / 2 : 0;
+      cuerpo.rotation.x = eje === 'z' ? Math.PI / 2 : 0;
+      cuerpo.position.set(x, y, z);
+      const vastago = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.55, 8), metalAzul);
+      vastago.position.set(x, y + 0.35, z);
+      const volante = new THREE.Mesh(new THREE.TorusGeometry(0.18, 0.035, 6, 18), new THREE.MeshStandardMaterial({ color: cerrada ? COLOR.alerta : 0x2a78d6, roughness: 0.4 }));
+      volante.rotation.x = Math.PI / 2;
+      volante.position.set(x, y + 0.62, z);
+      g.add(cuerpo, vastago, volante);
+      // caja de válvula: cuatro paredes de concreto
+      const yb = alturaTerreno(x, z);
+      for (const [dx, dz, w, d] of [[-0.5, 0, 0.1, 1.0], [0.5, 0, 0.1, 1.0], [0, -0.5, 1.0, 0.1], [0, 0.5, 1.0, 0.1]]) {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.5, d), concreto);
+        m.position.set(x + dx, yb + 0.1, z + dz);
+        g.add(m);
+      }
+    };
+    valvula(RED.xE + 1.2, RED.zP);
+    // Ramales, acometidas, medidores y viviendas
+    this.casasRed = [];
+    for (let j = 1; j <= t.N; j++) {
+      const x = t.xR(j);
+      const cerrado = p.ramalCerrado === j;
+      const zIni = RED.zP - 0.15;
+      const zFin = t.zC(t.K) - t.paso * 0.4;
+      tuboPorTerreno(x, zIni, x, zFin, rR, cerrado ? azulApagado : azul, 14);
+      if (p.valvulasRamal) valvula(x, RED.zP - 1.0, cerrado, 'z');
+      for (let k = 1; k <= t.K; k++) {
+        const id = `${j}-${k}`;
+        const z = t.zC(k);
+        const xc = x + 0.9 + t.ancho / 2;
+        const frente = z + t.fondo / 2;
+        const yA = yT(x, frente + 0.35);
+        // acometida: abrazadera de toma en el ramal → medidor → muro de la casa
+        const abrazadera = new THREE.Mesh(new THREE.TorusGeometry(rR * 1.15, 0.03, 6, 14), metalAzul);
+        abrazadera.rotation.y = Math.PI / 2;
+        abrazadera.position.set(x, yA, frente + 0.35);
+        g.add(abrazadera);
+        const esAnalisis = this.cg && this.cg.id === id;
+        if (!esAnalisis) {
+          tuboRecto(new THREE.Vector3(x, yA, frente + 0.35), new THREE.Vector3(xc - t.ancho / 2 + 0.25, yA, frente + 0.35), rA, cerrado ? azulApagado : azul);
+        }
+        const caja = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.3, 0.32), concreto);
+        caja.position.set(x + 0.55, alturaTerreno(x + 0.55, frente + 0.35) + 0.12, frente + 0.35);
+        const tapa = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.03, 0.27), new THREE.MeshStandardMaterial({ color: 0x2b3236, roughness: 0.6 }));
+        tapa.position.set(caja.position.x, caja.position.y + 0.165, caja.position.z);
+        g.add(caja, tapa);
+        if (esAnalisis) continue; // la vivienda de análisis tiene su propio modelo, con grifo
+        const pr = r.redDiseno.casas.find((c) => c.id === id);
+        const col = pr.cerrada ? 0x9aa3a6 : (pr.presion < p.presionMinima ? COLOR.alerta : (pr.presion < p.presionMinima + 3 ? 0xd9a43a : 0xeadfca));
+        const y0 = alturaTerreno(xc, z);
+        const alto = 2.2;
+        const muros = caja2(t.ancho, alto, t.fondo, col);
+        muros.position.set(xc, y0 + alto / 2, z);
+        muros.userData.casa = id;
+        const techo = caja2(t.ancho + 0.3, 0.25, t.fondo + 0.3, COLOR.techo);
+        techo.position.set(xc, y0 + alto + 0.12, z);
+        techo.userData.casa = id;
+        const puerta = caja2(0.5, 1.1, 0.05, 0x7a5236);
+        puerta.position.set(xc + t.ancho * 0.2, y0 + 0.55, frente + 0.03);
+        g.add(muros, techo, puerta);
+        this.casasRed.push(muros, techo);
+      }
+    }
+    // Hidrante al final de la principal
+    if (p.hidrante) {
+      const x = t.xR(t.N) + 3;
+      const y = alturaTerreno(x, RED.zP + 1.1);
+      const rojo = new THREE.MeshStandardMaterial({ color: p.incendio ? 0xff3b1f : 0xc0322a, roughness: 0.45, emissive: p.incendio ? 0x661100 : 0x000000 });
+      const poste = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.26, 1.1, 16), rojo);
+      poste.position.set(x, y + 0.55, RED.zP + 1.1);
+      const tapa = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), rojo);
+      tapa.position.set(x, y + 1.1, RED.zP + 1.1);
+      const boca = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.6, 10), rojo);
+      boca.rotation.x = Math.PI / 2;
+      boca.position.set(x, y + 0.7, RED.zP + 1.1);
+      g.add(poste, tapa, boca);
+      tuboRecto(new THREE.Vector3(x, yT(x, RED.zP), RED.zP), new THREE.Vector3(x, yT(x, RED.zP), RED.zP + 1.1), rP * 0.8, azul);
+      this.posHidrante = new THREE.Vector3(x, y + 0.7, RED.zP + 1.4);
+    } else this.posHidrante = null;
+    // Válvulas de aire (punto alto) y de purga (punto bajo)
+    const posNodo = (n) => {
+      if (!n) return null;
+      if (n.tipo === 'casa') { const [j, k] = n.casa.split('-').map(Number); return [t.xR(j), t.zC(k)]; }
+      if (n.id === 'HI') return [t.xR(t.N) + 3, RED.zP];
+      if (n.id === 'E') return [RED.xE, RED.zP];
+      return [t.xR(Number(n.id.slice(1))), RED.zP];
+    };
+    if (p.valvulaAire) {
+      const [x, z] = posNodo(r.redDiseno.puntoAlto);
+      const y = yT(x, z);
+      const ventosa = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.16, 0.5, 12), new THREE.MeshStandardMaterial({ color: 0x1f5fb0, roughness: 0.4 }));
+      ventosa.position.set(x, y + 0.35, z);
+      const domo = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 8), new THREE.MeshStandardMaterial({ color: 0x9fb4bf, roughness: 0.3, metalness: 0.5 }));
+      domo.position.set(x, y + 0.65, z);
+      g.add(ventosa, domo);
+      this.posAire = new THREE.Vector3(x, y + 1.2, z);
+    } else this.posAire = null;
+    if (p.valvulaPurga) {
+      const [x, z] = posNodo(r.redDiseno.puntoBajo);
+      const y = yT(x, z);
+      valvula(x + 0.6, z + 0.6, false, 'x');
+      tuboRecto(new THREE.Vector3(x, y, z), new THREE.Vector3(x + 0.6, y, z + 0.6), rR * 0.7, azul);
+      this.posPurga = new THREE.Vector3(x + 0.6, y + 1.0, z + 0.6);
+    } else this.posPurga = null;
+    this.indexar(g);
+  }
+
+  // ── Vivienda de análisis, con acometida, medidor y grifo exterior ──────
   construirCasa() {
     const g = this.grupos.casa;
     g.children.slice().forEach((o) => { g.remove(o); liberar(o); });
-    const y0 = 7.2;
-    const alto = Math.max(3.0, this.p.alturaGrifo + 1.4);
+    const c = this.geometriaCasa();
+    const t = this.trazadoRed();
+    const { x: X, z: Z, w, d, y0 } = c;
+    const alto = Math.max(2.6, this.p.alturaGrifo + 1.2);
     const pisos = alto > 4.5 ? 2 : 1;
-    const losa = caja(7, 0.3, 6, COLOR.concreto);
-    losa.position.set(X_CASA, y0 + 0.05, Z_CASA);
-    const muros = caja(6, alto, 5, COLOR.muro);
-    muros.position.set(X_CASA, y0 + 0.2 + alto / 2, Z_CASA);
+    const losa = caja(w + 0.6, 0.3, d + 0.6, COLOR.concreto);
+    losa.position.set(X, y0 + 0.05, Z);
+    const muros = caja(w, alto, d, COLOR.muro);
+    muros.position.set(X, y0 + 0.2 + alto / 2, Z);
     g.add(losa, muros);
-    // Techo a dos aguas
     const forma = new THREE.Shape();
-    forma.moveTo(-3.3, 0);
-    forma.lineTo(3.3, 0);
-    forma.lineTo(0, 1.7);
+    forma.moveTo(-(w / 2 + 0.3), 0);
+    forma.lineTo(w / 2 + 0.3, 0);
+    forma.lineTo(0, Math.min(1.7, w * 0.4));
     forma.closePath();
     const techo = new THREE.Mesh(
-      new THREE.ExtrudeGeometry(forma, { depth: 5.6, bevelEnabled: false }),
+      new THREE.ExtrudeGeometry(forma, { depth: d + 0.4, bevelEnabled: false }),
       new THREE.MeshStandardMaterial({ color: COLOR.techo, roughness: 0.8 }),
     );
-    techo.rotation.y = Math.PI / 2;
-    techo.position.set(X_CASA - 2.8, y0 + 0.2 + alto, Z_CASA);
+    techo.position.set(X, y0 + 0.2 + alto, Z - (d + 0.4) / 2);
     techo.castShadow = true;
-    // ExtrudeGeometry crece en +z local; tras girar crece en +x: el techo va de x−2.8 a x+2.8
     g.add(techo);
-    // Tanque elevado típico de las casas de la ciudad
-    const tanquito = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.55, 0.55, 0.9, 20),
-      new THREE.MeshStandardMaterial({ color: 0x2a2f31, roughness: 0.6 }),
-    );
-    tanquito.position.set(X_CASA + 1.4, y0 + 0.2 + alto + 1.1, Z_CASA - 1.2);
-    tanquito.castShadow = true;
+    const tanquito = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.7, 20), new THREE.MeshStandardMaterial({ color: 0x2a2f31, roughness: 0.6 }));
+    tanquito.position.set(X + w * 0.25, y0 + 0.2 + alto + 0.9, Z - d * 0.2);
     g.add(tanquito);
-    // Puerta y ventanas en la fachada
     const oscuro = 0x4e5d63;
-    const puerta = caja(1.1, 2.1, 0.08, 0x7a5236);
-    puerta.position.set(X_CASA + 1.2, y0 + 0.2 + 1.05, Z_FRENTE_CASA + 0.02);
-    const ventana = caja(1.2, 1.0, 0.08, oscuro);
-    ventana.position.set(X_CASA - 0.6, y0 + 0.2 + 1.6, Z_FRENTE_CASA + 0.02);
+    const puerta = caja(Math.min(1.0, w * 0.25), 2.0, 0.08, 0x7a5236);
+    puerta.position.set(X + w * 0.25, y0 + 0.2 + 1.0, c.frente + 0.02);
+    const ventana = caja(Math.min(1.1, w * 0.25), 0.9, 0.08, oscuro);
+    ventana.position.set(X - w * 0.05, y0 + 0.2 + 1.5, c.frente + 0.02);
     g.add(puerta, ventana);
     if (pisos === 2) {
-      for (const dx of [-1.6, 1.4]) {
-        const v2 = caja(1.2, 1.0, 0.08, oscuro);
-        v2.position.set(X_CASA + dx, y0 + 0.2 + alto - 1.4, Z_FRENTE_CASA + 0.02);
-        g.add(v2);
-      }
-      const franja = caja(6.05, 0.12, 5.05, 0xd5c7ab);
-      franja.position.set(X_CASA, y0 + 0.2 + alto / 2, Z_CASA);
+      const franja = caja(w + 0.05, 0.12, d + 0.05, 0xd5c7ab);
+      franja.position.set(X, y0 + 0.2 + alto / 2, Z);
       g.add(franja);
     }
-    // Grifo: llave y boquilla apuntando hacia +z
+    // Acometida: ramal → abrazadera → medidor → llave de paso → subida al grifo
     const metal = new THREE.MeshStandardMaterial({ color: 0xb9c2c5, roughness: 0.3, metalness: 0.8 });
     const yG = this.alturaGrifoEscena();
-    const zP = Z_FRENTE_CASA + 0.45;
+    const zP = c.frente + 0.45;
+    const xRam = t.xR(c.j);
+    const yA = alturaTerreno(xRam, c.frente + 0.35) + 0.3;
+    const radAc = Math.max(0.05, this.r.especs.Acometida.DE * ESC_TUBO);
+    const pts = [
+      new THREE.Vector3(xRam, yA, c.frente + 0.35),
+      new THREE.Vector3(xRam + 0.55, yA + 0.05, c.frente + 0.35),
+      new THREE.Vector3(c.xGrifo - 0.5, yA + 0.05, zP),
+      new THREE.Vector3(c.xGrifo - 0.05, yA + 0.3, zP),
+      new THREE.Vector3(c.xGrifo, yG - 0.35, zP),
+      new THREE.Vector3(c.xGrifo, yG, zP),
+    ];
+    this.curvaAcometida = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(this.curvaAcometida, 120, radAc, 10, false), this.materialTubo()));
+    this.flujoAcometida.setCurva(this.curvaAcometida, radAc, Math.max(0.03, radAc * 0.3));
+    const medidor = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.16, 14), new THREE.MeshStandardMaterial({ color: 0x2f6f8f, roughness: 0.4, metalness: 0.4 }));
+    medidor.position.set(xRam + 0.55, yA + 0.12, c.frente + 0.35);
+    const llavePaso = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.05, 0.05), new THREE.MeshStandardMaterial({ color: COLOR.alerta, roughness: 0.5 }));
+    llavePaso.position.set(xRam + 1.0, yA + 0.2, (c.frente + 0.35 + zP) / 2);
+    g.add(medidor, llavePaso);
+    // Grifo: llave y boquilla apuntando hacia +z
     const boquilla = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.45, 12), metal);
     boquilla.rotation.x = Math.PI / 2;
-    boquilla.position.set(X_GRIFO, yG, zP + 0.2);
+    boquilla.position.set(c.xGrifo, yG, zP + 0.2);
     const llave = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.06, 0.06), new THREE.MeshStandardMaterial({ color: COLOR.alerta, roughness: 0.5 }));
-    llave.position.set(X_GRIFO, yG + 0.18, zP + 0.1);
+    llave.position.set(c.xGrifo, yG + 0.18, zP + 0.1);
     this.llave = llave;
     g.add(boquilla, llave);
-    // Rejilla donde cae el chorro
-    this.rejilla = new THREE.Mesh(
-      new THREE.CircleGeometry(0.35, 20),
-      new THREE.MeshStandardMaterial({ color: 0x3f4b50, roughness: 0.7 }),
-    );
+    this.rejilla = new THREE.Mesh(new THREE.CircleGeometry(0.35, 20), new THREE.MeshStandardMaterial({ color: 0x3f4b50, roughness: 0.7 }));
     this.rejilla.rotation.x = -Math.PI / 2;
     g.add(this.rejilla);
-    this.salidaGrifo = new THREE.Vector3(X_GRIFO, yG, zP + 0.42);
+    this.salidaGrifo = new THREE.Vector3(c.xGrifo, yG, zP + 0.42);
     this.indexar(g);
   }
 
@@ -1254,14 +1445,15 @@ export class Escena {
       ['bomba', 'captacion', 'Estación de bombeo'],
       ['aduccion', 'tuberias', 'Aducción'],
       ['tanque', 'tanque', 'Tanque de almacenamiento'],
-      ['distribucion', 'tuberias', 'Distribución'],
-      ['casa', 'vivienda', 'Vivienda'],
+      ['distribucion', 'tuberias', 'Conducción'],
+      ['red', 'red', 'Red de distribución'],
+      ['casa', 'vivienda', 'Vivienda de análisis'],
       ['canal', 'arroyo', 'Arroyo canalizado'],
       ['piezo', null, 'Línea piezométrica'],
     ];
     for (const [id, tab, titulo] of defs) {
       const el = document.createElement('div');
-      const secundaria = ['rio', 'aduccion', 'distribucion', 'piezo'].includes(id);
+      const secundaria = ['rio', 'aduccion', 'distribucion', 'piezo', 'red'].includes(id);
       el.className = 'etiqueta3d' + (tab ? '' : ' piezo') + (secundaria ? ' secundaria' : '');
       el.innerHTML = `<b>${titulo}</b><span></span>`;
       if (tab) {
@@ -1316,6 +1508,7 @@ export class Escena {
       ray.setFromCamera(v, this.camara);
       const hit = ray.intersectObjects(this.seleccionables, false)[0];
       if (!hit) return;
+      if (hit.object.userData.casa) { this.onCasa(hit.object.userData.casa); return; }
       let o = hit.object;
       while (o && !o.userData.tab) o = o.parent;
       if (o) this.onSeleccion(o.userData.tab);
@@ -1359,10 +1552,14 @@ export class Escena {
     if (kT !== this.claves.tanque) { this.construirTanque(); this.claves.tanque = kT; }
     const kA = k(p.Daduccion, p.Dtanque, p.hMax);
     if (kA !== this.claves.aduccion) { this.construirAduccion(); this.claves.aduccion = kA; }
-    const kC = k(p.alturaGrifo);
-    if (kC !== this.claves.casa) { this.construirCasa(); this.claves.casa = kC; }
-    const kD = k(p.Ddistribucion, p.Dtanque, p.alturaGrifo);
+    const kD = k(p.Ddistribucion, p.Dtanque);
     if (kD !== this.claves.distribucion) { this.construirDistribucion(); this.claves.distribucion = kD; }
+    const kC = [k(p.alturaGrifo, p.nRamales, p.nViviendas), r.casa.id, r.especs.Acometida.DE].join('|');
+    if (kC !== this.claves.casa) { this.construirCasa(); this.claves.casa = kC; this.claves.red = null; }
+    const pres = r.redDiseno.casas.map((c) => (c.cerrada ? 'c' : (c.presion < p.presionMinima ? 'a' : (c.presion < p.presionMinima + 3 ? 'v' : 'o')))).join('');
+    const kR = [p.nRamales, p.nViviendas, r.especs.Principal.DE, r.especs.Ramal.DE, r.especs.Acometida.DE, p.valvulasRamal, p.valvulaAire, p.valvulaPurga,
+      p.hidrante, p.incendio, p.ramalCerrado, r.redDiseno.puntoAlto.id, r.redDiseno.puntoBajo.id, r.casa.id, pres].join('|');
+    if (kR !== this.claves.red) { this.construirRed(); this.claves.red = kR; }
     const kK = k(p.perimetro, p.anchoCanal, p.taludCanal ?? 0);
     if (kK !== this.claves.canal) { this.construirCanal(); this.claves.canal = kK; }
 
@@ -1372,6 +1569,14 @@ export class Escena {
     this.aguaTanque.scale.y = hN;
     this.aguaTanque.position.y = base + hN / 2;
     this.aguaTanque.visible = nivel > 0.005;
+    const auto = p.controlBomba === 'automatico';
+    this.interruptorParada.visible = auto;
+    this.interruptorArranque.visible = auto;
+    this.interruptorParada.position.y = base + p.nivelParada * VS;
+    this.interruptorArranque.position.y = base + p.nivelArranque * VS;
+    const colorLuz = r.bomba ? 0x2f7d5b : 0xc0422a;
+    this.luzBomba.material.color.setHex(colorLuz);
+    this.luzBomba.material.emissive.setHex(colorLuz);
 
     // Arroyo
     const c = r.canal;
@@ -1396,7 +1601,7 @@ export class Escena {
       origen: this.salidaGrifo, dir: 'z', v: r.vGrifo, h: p.alturaGrifo, esc: 1,
       cantidad: Math.round(20 + 50 * Math.min(1, r.qGrifo * 1000 / 0.6)),
     });
-    this.rejilla.position.set(X_GRIFO, 7.2 + 0.02, this.salidaGrifo.z + r.alcance);
+    this.rejilla.position.set(this.cg.xGrifo, this.cg.y0 + 0.02, this.salidaGrifo.z + r.alcance);
     this.rejilla.visible = r.vGrifo > 0.01;
     this.llave.rotation.z = (1 - p.apertura) * 1.2;
     this.chorroCompuerta.configurar({
@@ -1408,6 +1613,7 @@ export class Escena {
     // Régimen del flujo en cada conducto y comportamiento del desarenador
     this.flujoAduccion.setRegimen(mezclaTurbulenta(r.aduccion.Re));
     this.flujoDistribucion.setRegimen(mezclaTurbulenta(r.distribucion.Re));
+    this.flujoAcometida.setRegimen(mezclaTurbulenta(M.reynoldsVelocidad(r.grifo.vAc || 0, r.especs.Acometida.DI)));
     this.betaCanal = mezclaTurbulenta(c.Re, M.RE_CANAL_LAMINAR, M.RE_CANAL_TURBULENTO);
     const des = r.desarenador;
     this.flujoCaptacion.configurar(des.t, des.q, r.Qin);
@@ -1416,8 +1622,11 @@ export class Escena {
     const rT = this.radioTanque();
     const tope = Math.min(70, (p.cotaRio + r.alturaBombeo) * VS);
     const sup = (p.cotaTanque + nivel) * VS;
-    const hCasa = Math.max(7.2, (p.cotaCasa + p.alturaGrifo + r.Hcasa) * VS);
-    const clave = k(tope, sup, hCasa, rT);
+    const cg = this.cg;
+    const yEnt = Math.max(alturaTerreno(RED.xE, RED.zP), r.Hentrada * VS);
+    const yNodo = Math.max(cg.y0, r.casa.Hn * VS);
+    const hCasa = Math.max(cg.y0, (r.casa.cota + p.alturaGrifo + r.Hcasa) * VS);
+    const clave = k(tope, sup, hCasa, rT, yEnt, yNodo, cg.x, cg.z);
     const yB = alturaTerreno(X_BOMBA, 0) + 1.0;
     if (clave !== this.clavePiezo) {
       const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -1425,8 +1634,10 @@ export class Escena {
         [V3(X_BOMBA + 2.6, yB, -0.01), V3(X_BOMBA + 2.6, tope, -0.01)],
         [V3(X_BOMBA + 2.6, tope, -0.01), V3(-rT - 0.6, sup, -0.01)],
         [V3(-rT - 0.6, sup, -0.01), V3(rT + 0.8, sup, 0.6)],
-        [V3(rT + 0.8, sup, 0.6), V3(X_GRIFO, hCasa, Z_FRENTE_CASA + 0.45)],
-        [V3(X_GRIFO, hCasa, Z_FRENTE_CASA + 0.45), V3(X_GRIFO, 7.2, Z_FRENTE_CASA + 0.45)],
+        [V3(rT + 0.8, sup, 0.6), V3(RED.xE, yEnt, RED.zP)],
+        [V3(RED.xE, yEnt, RED.zP), V3(cg.x - cg.w / 2 - 0.9, yNodo, cg.frente + 0.35)],
+        [V3(cg.x - cg.w / 2 - 0.9, yNodo, cg.frente + 0.35), V3(cg.xGrifo, hCasa, cg.frente + 0.45)],
+        [V3(cg.xGrifo, hCasa, cg.frente + 0.45), V3(cg.xGrifo, cg.y0, cg.frente + 0.45)],
       ]);
       this.clavePiezo = clave;
     }
@@ -1435,18 +1646,21 @@ export class Escena {
     const V = (x, y, z) => new THREE.Vector3(x, y, z);
     const nivelCasa = r.estado === 'normal' ? 'ok' : (r.estado === 'baja-presion' ? 'aviso' : 'alerta');
     this.etiqueta('rio', `Cota ${fmt(p.cotaRio)} m`, 'ok', V(X_RIO - 1, 3.2, 14));
-    this.etiqueta('bomba', `${fmt(p.Qbombeo)} L/s, H = ${fmt(r.alturaBombeo)} m`, 'ok', V(X_BOMBA, alturaTerreno(X_BOMBA, 0) + 5.2, 0));
+    this.etiqueta('bomba', r.bomba ? `Encendida: ${fmt(p.Qbombeo)} L/s, H = ${fmt(r.alturaBombeo)} m` : `Apagada: tanque lleno (arranca a ${fmt(p.nivelArranque)} m)`, r.bomba ? 'ok' : 'aviso', V(X_BOMBA, alturaTerreno(X_BOMBA, 0) + 5.6, 0));
     const textoBocatoma = r.Qin > 0 ? `Retiene granos ≥ ${fmt(des.dMin * 1000, 3)} mm` : 'Sin caudal';
     this.etiqueta('bocatoma', textoBocatoma, 'ok', V(-34, 8, -19));
-    this.etiqueta('aduccion', `V = ${fmt(r.aduccion.V)} m/s · ${r.aduccion.regimen}`, 'ok', V(-16, alturaTerreno(-16, 0) + 2.8, 0));
+    this.etiqueta('aduccion', r.bomba ? `V = ${fmt(r.aduccion.V)} m/s · ${r.aduccion.regimen}` : 'Sin flujo: bomba apagada', r.bomba ? 'ok' : 'aviso', V(-16, alturaTerreno(-16, 0) + 2.8, 0));
     const pct = (nivel / p.hMax) * 100;
-    this.etiqueta('tanque', `${fmt(nivel)} m, ${fmt(r.volumen)} m³ (${fmt(pct, 0)} %)`, r.vacio ? 'alerta' : 'ok', V(0, base + p.hMax * VS + 2.6, 0));
-    this.etiqueta('distribucion', `V = ${fmt(r.distribucion.V)} m/s · ${r.distribucion.regimen}`, 'ok', V(18, alturaTerreno(18, 0.6) + 2.6, 0.6));
+    const tendencia = r.pendienteNivel > 1e-7 ? 'subiendo' : (r.pendienteNivel < -1e-7 ? 'bajando' : 'estable');
+    this.etiqueta('tanque', `${fmt(nivel)} m, ${fmt(r.volumen)} m³ (${fmt(pct, 0)} %), ${tendencia}`, r.vacio ? 'alerta' : 'ok', V(0, base + p.hMax * VS + 2.6, 0));
+    this.etiqueta('distribucion', `V = ${fmt(r.distribucion.V)} m/s · ${r.distribucion.regimen}`, 'ok', V(15, alturaTerreno(15, 0.6) + 2.6, 0.6));
+    const rd = r.redDiseno;
+    this.etiqueta('red', `${rd.N * rd.K} viviendas · presión mín. ${fmt(r.red.presionMin, 1)} m.c.a.`, rd.presionMin < p.presionMinima ? 'alerta' : 'ok', V((RED.xE + RED.x2) / 2, alturaTerreno(34, RED.zP) + 2.4, RED.zP + 1.5));
     const textoCasa = r.Hcasa > 0 ? `${fmt(r.Hcasa)} m.c.a., ${fmt(r.qGrifo * 1000)} L/s` : 'Sin agua en el grifo';
-    this.etiqueta('casa', textoCasa, nivelCasa, V(X_CASA, 7.2 + Math.max(3.0, p.alturaGrifo + 1.4) + 3.4, Z_CASA));
+    this.etiqueta('casa', `${r.casa.id} · ${textoCasa}`, nivelCasa, V(cg.x, cg.y0 + Math.max(2.6, p.alturaGrifo + 1.2) + 2.6, cg.z));
     const textoCanal = c.desborde ? `Desborde: ${fmt(p.Qcrecida)} > ${fmt(c.Qcap)} m³/s` : `${fmt(p.Qcrecida)} de ${fmt(c.Qcap)} m³/s`;
     this.etiqueta('canal', textoCanal, c.desborde ? 'alerta' : 'ok', V(12, CORONA + 2.6, Z_CANAL));
-    this.etiqueta('piezo', '', 'ok', V((rT + X_GRIFO) / 2 + 3, (sup + hCasa) / 2 + 1.6, 0.6));
+    this.etiqueta('piezo', '', 'ok', V((rT + RED.xE) / 2, (sup + yEnt) / 2 + 1.6, 0.6));
   }
 
   // ── Bucle de animación ────────────────────────────────────────────────
@@ -1461,8 +1675,8 @@ export class Escena {
       this.pasoRio(dt);
       this.flujoCaptacion.paso(dt);
       this.flujoAduccion.paso(dt, r.Qin > 0 ? r.aduccion.V : 0);
-      const vDist = r.Hcasa > 0 ? r.distribucion.V : 0;
-      this.flujoDistribucion.paso(dt, vDist);
+      this.flujoDistribucion.paso(dt, r.Qsal > 0 ? r.distribucion.V : 0);
+      this.flujoAcometida.paso(dt, r.Hcasa > 0 ? r.grifo.vAc || 0 : 0);
       this.chorroGrifo.paso(dt);
       this.chorroCompuerta.paso(dt);
       this.pasoCanal(dt);

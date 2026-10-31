@@ -230,15 +230,15 @@ body {
 .pestanas {
   position: sticky; top: 0; z-index: 2;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   background: var(--panel);
   border-bottom: 1px solid var(--linea);
 }
 .pestana {
   border: 0;
   background: none;
-  padding: 11px 4px 9px;
-  font-size: 13.5px;
+  padding: 11px 2px 9px;
+  font-size: 13px;
   font-weight: 550;
   color: var(--tinta-2);
   border-bottom: 3px solid transparent;
@@ -337,7 +337,7 @@ input[type="range"]::-moz-range-thumb {
 /* Resultados */
 .metricas {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(48%, 1fr) minmax(0, auto);
   margin: 0;
   font-size: 14px;
 }
@@ -437,3 +437,41 @@ input[type="range"]::-moz-range-thumb {
 @media (prefers-reduced-motion: reduce) {
   .ayuda { transition: none; }
 }
+
+/* ── Diseño: tuberías del catálogo, casillas, red, zanja y cantidades ── */
+.control.tubo { display: grid; gap: 6px; }
+.etiqueta-tubo { font-weight: 600; font-size: 14px; }
+.selects-tubo { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.selects-tubo select:first-child { grid-column: 1 / -1; }
+.selects-tubo select, .control select {
+  width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid var(--linea);
+  border-radius: var(--r-chico); background: var(--panel); font-size: 13.5px;
+}
+.control.tubo .extra { font-size: 12px; color: var(--tinta-2); line-height: 1.35; }
+.control.casilla label { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; cursor: pointer; }
+.control.casilla input { margin-top: 3px; accent-color: var(--agua); }
+.plano { margin: 12px 0 4px; }
+.svg-plano svg { width: 100%; height: auto; display: block; background: color-mix(in srgb, var(--agua) 5%, var(--panel)); border: 1px solid var(--linea); border-radius: var(--r-medio); }
+.svg-plano .t-chica, .svg-zanja .t-chica { font-size: 9.5px; fill: var(--tinta-2); font-family: var(--ui); }
+.svg-plano .t-sel { fill: var(--tinta); font-weight: 650; }
+.casa-plano { cursor: pointer; }
+.casa-plano:hover path, .casa-plano:focus path { stroke: var(--tinta); stroke-width: 1.5; }
+.casa-plano:focus { outline: none; }
+.leyenda-plano { font-size: 12px; color: var(--tinta-2); margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.leyenda-plano span { display: inline-flex; align-items: center; gap: 4px; }
+.leyenda-plano i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.plano figcaption, .zanja figcaption { font-size: 12.5px; color: var(--tinta-2); margin-top: 6px; }
+.svg-zanja svg { width: 100%; height: auto; display: block; }
+.revision { list-style: none; margin: 6px 0 14px; padding: 0; display: grid; gap: 6px; }
+.revision li { display: grid; grid-template-columns: 20px 1fr; gap: 6px; font-size: 13.5px; line-height: 1.35; }
+.revision li small { display: block; color: var(--tinta-2); font-size: 12px; }
+.revision .marca-rev { font-weight: 700; text-align: center; }
+.revision li[data-nivel="ok"] .marca-rev { color: var(--ok); }
+.revision li[data-nivel="aviso"] .marca-rev { color: var(--aviso); }
+.revision li[data-nivel="alerta"] .marca-rev { color: var(--alerta); }
+.revision li[data-nivel="alerta"] > span { color: var(--alerta); }
+table.cantidades { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 14px; }
+table.cantidades th, table.cantidades td { padding: 6px 6px; border-bottom: 1px solid var(--linea); text-align: left; vertical-align: top; }
+table.cantidades th { color: var(--tinta-2); font-weight: 600; font-size: 12px; }
+table.cantidades td small { display: block; color: var(--tinta-2); font-size: 11.5px; }
+table.cantidades .num { text-align: right; white-space: nowrap; }

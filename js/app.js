@@ -3,16 +3,18 @@
  * métricas, ecuaciones con sustitución numérica y gráficas.
  */
 import * as M from './modelo.js';
+import * as D from './diseno.js';
+import * as S from './sistema.js';
 import { Escena } from './escena3d.js';
 import { crearGrafica, actualizarGrafica, serieLinea, seriePuntos, paleta } from './graficas.js';
 import { ExperimentoReynolds } from './reynolds.js';
 
 // ── Estado ────────────────────────────────────────────────────────────────
-const NIVEL_INICIAL = 3.2;
+const NIVEL_INICIAL = 4.4;
 const HORA_INICIAL = 6 * 3600;
-const p = { ...M.PARAMETROS_INICIALES };
-const sim = { nivel: NIVEL_INICIAL, t: HORA_INICIAL, corriendo: true, factor: 600 };
-let r = M.calcularSistema(p, sim.nivel);
+const p = { ...M.PARAMETROS_INICIALES, ...S.PARAMETROS_DISENO };
+const sim = { nivel: NIVEL_INICIAL, t: HORA_INICIAL, bomba: true, arranques: 0, corriendo: true, factor: 600 };
+let r = S.calcular(p, sim);
 let tabActiva = 'captacion';
 
 // ── Formato numérico (punto decimal, espacio fino para miles) ────────────
@@ -46,9 +48,10 @@ const lps = M.lpsAm3s;
 // ── Definición de pestañas y controles ─────────────────────────────────────
 const TABS = [
   { id: 'captacion', nombre: 'Captación', extra: true, intro: 'El agua del río entra por la rejilla de la bocatoma, deja la arena en el desarenador y pasa al pozo de succión, de donde la bomba la eleva hasta el tanque. Aquí se fija cuánto se bombea, el tamaño del desarenador y cuánto cuesta la energía.' },
-  { id: 'tuberias', nombre: 'Tuberías', experimento: true, intro: 'La aducción lleva el agua del río al tanque y la distribución la baja hasta las viviendas. El diámetro y el caudal fijan la velocidad, el régimen del flujo (laminar o turbulento) y lo que se pierde por fricción.' },
-  { id: 'tanque', nombre: 'Tanque', intro: 'El tanque compensa la diferencia entre lo que entra por bombeo y lo que consume el sector. Con caudales constantes, su nivel sube o baja en línea recta.' },
-  { id: 'vivienda', nombre: 'Vivienda', intro: 'La presión en la casa es la altura del agua en el tanque menos lo que se pierde en el camino. Con esa presión sale el chorro del grifo.' },
+  { id: 'tuberias', nombre: 'Tuberías', experimento: true, intro: 'La aducción lleva el agua cruda del río al tanque, impulsada por la bomba; la conducción la baja del tanque hasta la entrada del barrio, donde empieza la red de distribución. Cada tubería se elige del catálogo por material, clase de presión y diámetro comercial: el diámetro interno fija la velocidad y el régimen del flujo, y el material, la rugosidad (o el coeficiente C de Hazen-Williams) y la presión que aguanta.' },
+  { id: 'tanque', nombre: 'Tanque', extra: true, intro: 'El tanque compensa la diferencia entre lo que entra por bombeo y lo que consume el sector. Dos interruptores de nivel controlan la bomba: se apaga cuando el agua llega al nivel de parada y vuelve a arrancar cuando baja al nivel de arranque. El consumo cambia a lo largo del día: cuando es menor que el caudal máximo diario el tanque sube, y en las horas pico baja.' },
+  { id: 'red', nombre: 'Red', red: true, intro: 'La red de distribución reparte el agua en el barrio: una tubería principal, ramales que salen de ella con su válvula de compuerta, y en cada vivienda una acometida con abrazadera de toma, tubería de servicio, llave de paso y medidor. La conducción abastece todo el sector (QMD del tanque); aquí se diseña un barrio de ese sector. Diseña la red con los controles, mira las presiones en el plano y toca una vivienda para analizarla.' },
+  { id: 'vivienda', nombre: 'Vivienda', intro: 'La presión en la casa es la altura del agua en el tanque menos lo que se pierde en la conducción, en la red y en la acometida (tubería de servicio, medidor y llave de paso). Con lo que queda sale el chorro del grifo.' },
   { id: 'arroyo', nombre: 'Arroyo', intro: 'Con los aguaceros los arroyos de la ciudad crecen de golpe. El canal trapezoidal, excavado por debajo de la calle, tiene que conducir la crecida sin desbordarse.' },
 ];
 
@@ -69,14 +72,16 @@ const VISTAS_EXPERIMENTO = [
 const TUBOS_EXPERIMENTO = [
   { valor: 'vidrio', nombre: 'Tubo de vidrio (experimento)' },
   { valor: 'aduccion', nombre: 'Tubería de aducción del sistema' },
-  { valor: 'distribucion', nombre: 'Tubería de distribución del sistema' },
+  { valor: 'distribucion', nombre: 'Tubería de conducción del sistema' },
 ];
 
 const CONTROLES = [
   { tab: 'captacion', grupo: 'Bombeo desde el río' },
   { tab: 'captacion', id: 'Qbombeo', clave: 'Qbombeo', etiqueta: 'Caudal bombeado', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
-  { tab: 'captacion', id: 'horasDia', clave: 'horasDia', etiqueta: 'Horas de bombeo al día', unidad: 'h', min: 1, max: 24, paso: 0.5, dec: 1 },
   { tab: 'captacion', id: 'eficiencia', clave: 'eficiencia', etiqueta: 'Eficiencia de la bomba', unidad: '%', min: 40, max: 90, paso: 1, dec: 0, aUI: (v) => v * 100, deUI: (v) => v / 100 },
+  { tab: 'captacion', grupo: 'Tubería de succión (pozo → bomba)' },
+  { tab: 'captacion', id: 'tuboSuccion', tubo: 'Succion', tipo: 'tubo', etiqueta: 'Tubería de succión' },
+  { tab: 'captacion', id: 'Lsuccion', clave: 'Lsuccion', etiqueta: 'Longitud de la succión', unidad: 'm', min: 2, max: 30, paso: 0.5, dec: 1 },
   { tab: 'captacion', grupo: 'Desarenador de la bocatoma' },
   { tab: 'captacion', id: 'desLongitud', clave: 'desLongitud', etiqueta: 'Longitud del desarenador (L)', unidad: 'm', min: 2, max: 15, paso: 0.1, dec: 2 },
   { tab: 'captacion', id: 'desAncho', clave: 'desAncho', etiqueta: 'Ancho del desarenador (B)', unidad: 'm', min: 0.5, max: 3, paso: 0.05, dec: 2 },
@@ -85,24 +90,30 @@ const CONTROLES = [
   { tab: 'captacion', id: 'tarifa', clave: 'tarifaKWh', etiqueta: 'Tarifa de energía', unidad: 'COP/kWh', min: 300, max: 1500, paso: 10, dec: 0 },
   { tab: 'captacion', id: 'cargoFijo', clave: 'cargoFijo', etiqueta: 'Cargo fijo mensual', unidad: 'COP', min: 0, max: 500000, paso: 5000, dec: 0 },
 
-  { tab: 'tuberias', grupo: 'Aducción: del río al tanque' },
+  { tab: 'tuberias', grupo: 'Cálculo de las pérdidas' },
+  { tab: 'tuberias', id: 'metodoPerdidas', clave: 'metodoPerdidas', etiqueta: 'Ecuación de fricción', tipo: 'opciones', opciones: [
+    { valor: 'darcy', nombre: 'Darcy-Weisbach con rugosidad ε (Swamee-Jain)' }, { valor: 'hazen', nombre: 'Hazen-Williams con coeficiente C' }] },
+  { tab: 'tuberias', grupo: 'Aducción: bombeo del río al tanque' },
   { tab: 'tuberias', id: 'Qbombeo2', clave: 'Qbombeo', etiqueta: 'Caudal', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
   {
     tab: 'tuberias', id: 'Vaduccion', etiqueta: 'Velocidad del flujo', unidad: 'm/s', min: 0.005, max: 5, paso: 0.001, dec: 3,
     leer: () => M.velocidadMedia(lps(p.Qbombeo), p.Daduccion),
     escribir: (v) => { p.Qbombeo = limitar(M.m3sAlps(M.caudalDesdeVelocidad(v, p.Daduccion)), 0.1, 30); },
   },
-  { tab: 'tuberias', id: 'Daduccion', clave: 'Daduccion', etiqueta: 'Diámetro', unidad: 'mm', min: 50, max: 300, paso: 1, dec: 0, aUI: (v) => v * 1000, deUI: (v) => v / 1000, extra: pulgadas },
+  { tab: 'tuberias', id: 'tuboAduccion', tubo: 'Aduccion', tipo: 'tubo', etiqueta: 'Tubería de aducción' },
   { tab: 'tuberias', id: 'Laduccion', clave: 'Laduccion', etiqueta: 'Longitud', unidad: 'm', min: 100, max: 2000, paso: 10, dec: 0 },
-  { tab: 'tuberias', grupo: 'Distribución: del tanque a la vivienda' },
-  { tab: 'tuberias', id: 'Qdemanda', clave: 'Qdemanda', etiqueta: 'Caudal consumido por el sector', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
+  { tab: 'tuberias', grupo: 'Conducción: del tanque a la entrada del barrio' },
+  { tab: 'tuberias', id: 'Qdemanda', clave: 'Qdemanda', etiqueta: 'Caudal máximo diario del sector (QMD)', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
   {
-    tab: 'tuberias', id: 'Vdistribucion', etiqueta: 'Velocidad del flujo', unidad: 'm/s', min: 0.005, max: 6, paso: 0.001, dec: 3,
+    tab: 'tuberias', id: 'Vdistribucion', etiqueta: 'Velocidad con el QMD', unidad: 'm/s', min: 0.005, max: 6, paso: 0.001, dec: 3,
     leer: () => M.velocidadMedia(lps(p.Qdemanda), p.Ddistribucion),
     escribir: (v) => { p.Qdemanda = limitar(M.m3sAlps(M.caudalDesdeVelocidad(v, p.Ddistribucion)), 0.1, 30); },
   },
-  { tab: 'tuberias', id: 'Ddistribucion', clave: 'Ddistribucion', etiqueta: 'Diámetro', unidad: 'mm', min: 25, max: 200, paso: 1, dec: 0, aUI: (v) => v * 1000, deUI: (v) => v / 1000, extra: pulgadas },
+  { tab: 'tuberias', id: 'tuboConduccion', tubo: 'Conduccion', tipo: 'tubo', etiqueta: 'Tubería de conducción' },
   { tab: 'tuberias', id: 'Ldistribucion', clave: 'Ldistribucion', etiqueta: 'Longitud', unidad: 'm', min: 100, max: 2000, paso: 10, dec: 0 },
+  { tab: 'tuberias', grupo: 'Criterios de velocidad (referencia)' },
+  { tab: 'tuberias', id: 'Vmin', clave: 'Vmin', etiqueta: 'Velocidad mínima', unidad: 'm/s', min: 0.1, max: 1.5, paso: 0.05, dec: 2 },
+  { tab: 'tuberias', id: 'Vmax', clave: 'Vmax', etiqueta: 'Velocidad máxima', unidad: 'm/s', min: 1, max: 6, paso: 0.1, dec: 1 },
   { tab: 'tuberias', contenedor: 'experimento', id: 'expVista', clave: 'expVista', etiqueta: 'Cómo verlo', tipo: 'opciones', opciones: VISTAS_EXPERIMENTO },
   { tab: 'tuberias', contenedor: 'experimento', id: 'expTubo', clave: 'expTubo', etiqueta: 'Qué tubo mostrar', tipo: 'opciones', opciones: TUBOS_EXPERIMENTO },
   { tab: 'tuberias', contenedor: 'experimento', soloVidrio: true, id: 'expDiametro', clave: 'expDiametro', etiqueta: 'Diámetro del tubo de vidrio', unidad: 'mm', min: 2, max: 50, paso: 0.5, dec: 1, aUI: (v) => v * 1000, deUI: (v) => v / 1000 },
@@ -111,6 +122,16 @@ const CONTROLES = [
   { tab: 'tanque', grupo: 'Dimensiones' },
   { tab: 'tanque', id: 'Dtanque', clave: 'Dtanque', etiqueta: 'Diámetro del tanque', unidad: 'm', min: 4, max: 20, paso: 0.1, dec: 2 },
   { tab: 'tanque', id: 'hMax', clave: 'hMax', etiqueta: 'Altura útil', unidad: 'm', min: 2, max: 8, paso: 0.1, dec: 2 },
+  { tab: 'tanque', grupo: 'Control de la bomba' },
+  { tab: 'tanque', id: 'controlBomba', clave: 'controlBomba', etiqueta: 'Modo de operación', tipo: 'opciones', opciones: [
+    { valor: 'automatico', nombre: 'Automático por niveles (arranque y parada)' }, { valor: 'continuo', nombre: 'Continuo: la bomba nunca se apaga' }] },
+  { tab: 'tanque', id: 'nivelParada', clave: 'nivelParada', etiqueta: 'Nivel de parada (se apaga)', unidad: 'm', min: 0.5, max: () => p.hMax, paso: 0.05, dec: 2, soloAuto: true },
+  { tab: 'tanque', id: 'nivelArranque', clave: 'nivelArranque', etiqueta: 'Nivel de arranque (vuelve a encender)', unidad: 'm', min: 0.1, max: () => p.nivelParada - 0.2, paso: 0.05, dec: 2, soloAuto: true },
+  { tab: 'tanque', grupo: 'Consumo del sector' },
+  { tab: 'tanque', id: 'curvaDemanda', clave: 'curvaDemanda', etiqueta: 'Consumo a lo largo del día', tipo: 'opciones', opciones: [
+    { valor: 'horaria', nombre: 'Curva horaria (picos de mañana y tarde)' }, { valor: 'constante', nombre: 'Constante e igual al QMD' }] },
+  { tab: 'tanque', id: 'k1', clave: 'k1', etiqueta: 'k1 = QMD / Qmd', unidad: '', min: 1.1, max: 1.5, paso: 0.05, dec: 2 },
+  { tab: 'tanque', id: 'k2', clave: 'k2', etiqueta: 'k2 = QMH / QMD', unidad: '', min: 1.2, max: 1.8, paso: 0.05, dec: 2 },
   { tab: 'tanque', grupo: 'Operación' },
   {
     tab: 'tanque', id: 'nivel', etiqueta: 'Nivel actual del agua', unidad: 'm', min: 0, max: () => p.hMax, paso: 0.01, dec: 2,
@@ -118,14 +139,57 @@ const CONTROLES = [
     escribir: (v) => { sim.nivel = limitar(v, 0, p.hMax); },
   },
   { tab: 'tanque', id: 'Qbombeo3', clave: 'Qbombeo', etiqueta: 'Caudal que entra (bombeo)', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
-  { tab: 'tanque', id: 'Qdemanda2', clave: 'Qdemanda', etiqueta: 'Caudal que sale (consumo)', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
+  { tab: 'tanque', id: 'Qdemanda2', clave: 'Qdemanda', etiqueta: 'Caudal máximo diario del sector (QMD)', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
+
+  { tab: 'red', grupo: 'Trazado' },
+  { tab: 'red', id: 'nRamales', clave: 'nRamales', etiqueta: 'Número de ramales', unidad: '', min: 1, max: 4, paso: 1, dec: 0 },
+  { tab: 'red', id: 'nViviendas', clave: 'nViviendas', etiqueta: 'Viviendas por ramal', unidad: '', min: 2, max: 8, paso: 1, dec: 0 },
+  { tab: 'red', id: 'Lentrada', clave: 'Lentrada', etiqueta: 'Entrada del barrio → primer ramal', unidad: 'm', min: 10, max: 200, paso: 5, dec: 0 },
+  { tab: 'red', id: 'sepRamales', clave: 'sepRamales', etiqueta: 'Separación entre ramales', unidad: 'm', min: 20, max: 150, paso: 5, dec: 0 },
+  { tab: 'red', id: 'sepViviendas', clave: 'sepViviendas', etiqueta: 'Separación entre viviendas', unidad: 'm', min: 6, max: 40, paso: 1, dec: 0 },
+  { tab: 'red', id: 'pendPrincipal', clave: 'pendPrincipal', etiqueta: 'Pendiente del terreno en la principal', unidad: '%', min: -5, max: 5, paso: 0.1, dec: 1, aUI: (v) => v * 100, deUI: (v) => v / 100, extra: (v) => (v >= 0 ? 'Positiva: el terreno sube aguas abajo' : 'Negativa: el terreno baja aguas abajo') },
+  { tab: 'red', id: 'pendRamal', clave: 'pendRamal', etiqueta: 'Pendiente del terreno en los ramales', unidad: '%', min: -5, max: 5, paso: 0.1, dec: 1, aUI: (v) => v * 100, deUI: (v) => v / 100 },
+  { tab: 'red', grupo: 'Tuberías de la red' },
+  { tab: 'red', id: 'tuboPrincipal', tubo: 'Principal', tipo: 'tubo', etiqueta: 'Tubería principal' },
+  { tab: 'red', id: 'tuboRamal', tubo: 'Ramal', tipo: 'tubo', etiqueta: 'Ramales distribuidores' },
+  { tab: 'red', grupo: 'Accesorios y maniobra' },
+  { tab: 'red', id: 'valvulasRamal', clave: 'valvulasRamal', etiqueta: 'Válvula de compuerta con caja al inicio de cada ramal', tipo: 'casilla' },
+  { tab: 'red', id: 'valvulaAire', clave: 'valvulaAire', etiqueta: 'Válvula de aire en el punto alto', tipo: 'casilla' },
+  { tab: 'red', id: 'valvulaPurga', clave: 'valvulaPurga', etiqueta: 'Válvula de purga en el punto bajo', tipo: 'casilla' },
+  { tab: 'red', id: 'hidrante', clave: 'hidrante', etiqueta: 'Hidrante contra incendios al final de la principal', tipo: 'casilla' },
+  { tab: 'red', id: 'incendio', clave: 'incendio', etiqueta: 'Simular el uso del hidrante (incendio)', tipo: 'casilla', soloHidrante: true },
+  { tab: 'red', id: 'Qincendio', clave: 'Qincendio', etiqueta: 'Caudal del hidrante', unidad: 'L/s', min: 1, max: 20, paso: 0.5, dec: 1, soloHidrante: true },
+  { tab: 'red', id: 'ramalCerrado', clave: 'ramalCerrado', etiqueta: 'Cerrar la válvula de un ramal (reparación)', tipo: 'opciones', numero: true,
+    opciones: () => [{ valor: 0, nombre: 'Todas las válvulas abiertas' }, ...Array.from({ length: Math.round(p.nRamales) }, (_, j) => ({ valor: j + 1, nombre: `Cerrar el ramal ${j + 1}` }))] },
+  { tab: 'red', id: 'casaAnalisis', clave: 'casaAnalisis', etiqueta: 'Vivienda de análisis', tipo: 'opciones',
+    opciones: () => [{ valor: 'auto', nombre: 'La de menor presión (crítica)' },
+      ...Array.from({ length: Math.round(p.nRamales) * Math.round(p.nViviendas) }, (_, i) => {
+        const j = Math.floor(i / Math.round(p.nViviendas)) + 1;
+        const k = (i % Math.round(p.nViviendas)) + 1;
+        return { valor: `${j}-${k}`, nombre: `Ramal ${j}, vivienda ${k}` };
+      })] },
+  { tab: 'red', grupo: 'Demanda por vivienda' },
+  { tab: 'red', id: 'habitantes', clave: 'habitantes', etiqueta: 'Habitantes por vivienda', unidad: 'hab', min: 1, max: 12, paso: 0.5, dec: 1 },
+  { tab: 'red', id: 'dotacion', clave: 'dotacion', etiqueta: 'Dotación neta', unidad: 'L/hab·d', min: 80, max: 250, paso: 5, dec: 0 },
+  { tab: 'red', id: 'perdidas', clave: 'perdidas', etiqueta: 'Pérdidas técnicas', unidad: '%', min: 0, max: 50, paso: 1, dec: 0, aUI: (v) => v * 100, deUI: (v) => v / 100 },
+  { tab: 'red', grupo: 'Zanja' },
+  { tab: 'red', id: 'recubrimiento', clave: 'recubrimiento', etiqueta: 'Relleno sobre la tubería', unidad: 'm', min: 0.6, max: 2, paso: 0.05, dec: 2 },
+  { tab: 'red', id: 'cama', clave: 'cama', etiqueta: 'Cama de apoyo', unidad: 'm', min: 0.05, max: 0.3, paso: 0.01, dec: 2 },
+  { tab: 'red', id: 'holgura', clave: 'holgura', etiqueta: 'Espacio a cada lado del tubo', unidad: 'm', min: 0.15, max: 0.5, paso: 0.01, dec: 2 },
+  { tab: 'red', grupo: 'Criterios de presión (referencia)' },
+  { tab: 'red', id: 'presionMinima2', clave: 'presionMinima', etiqueta: 'Presión mínima en la red', unidad: 'm.c.a.', min: 5, max: 30, paso: 0.5, dec: 1 },
+  { tab: 'red', id: 'presionMaxRed', clave: 'presionMaxRed', etiqueta: 'Presión estática máxima', unidad: 'm.c.a.', min: 30, max: 100, paso: 1, dec: 0 },
 
   { tab: 'vivienda', grupo: 'Grifo' },
   { tab: 'vivienda', id: 'apertura', clave: 'apertura', etiqueta: 'Apertura de la llave', unidad: '%', min: 5, max: 100, paso: 1, dec: 0, aUI: (v) => v * 100, deUI: (v) => v / 100 },
   { tab: 'vivienda', id: 'alturaGrifo', clave: 'alturaGrifo', etiqueta: 'Altura del grifo sobre el terreno', unidad: 'm', min: 0.5, max: 9, paso: 0.1, dec: 2 },
+  { tab: 'vivienda', grupo: 'Acometida: de la red a la vivienda' },
+  { tab: 'vivienda', id: 'tuboAcometida', tubo: 'Acometida', tipo: 'tubo', etiqueta: 'Tubería de servicio' },
+  { tab: 'vivienda', id: 'Lacometida', clave: 'Lacometida', etiqueta: 'Longitud de la acometida', unidad: 'm', min: 2, max: 40, paso: 0.5, dec: 1 },
+  { tab: 'vivienda', id: 'medidorDh', clave: 'medidorDh', etiqueta: 'Pérdida del medidor a su caudal máximo', unidad: 'm', min: 2, max: 25, paso: 0.5, dec: 1, extra: () => `Caudal máximo del medidor: ${fmt(p.medidorQmax, 1)} m³/h` },
   { tab: 'vivienda', grupo: 'Criterio de servicio' },
   { tab: 'vivienda', id: 'presionMinima', clave: 'presionMinima', etiqueta: 'Presión mínima de referencia', unidad: 'm.c.a.', min: 5, max: 30, paso: 0.5, dec: 1 },
-  { tab: 'vivienda', id: 'Qdemanda3', clave: 'Qdemanda', etiqueta: 'Caudal consumido por el sector', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
+  { tab: 'vivienda', id: 'Qdemanda3', clave: 'Qdemanda', etiqueta: 'Caudal máximo diario del sector (QMD)', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
 
   { tab: 'arroyo', grupo: 'Sección del canal' },
   { tab: 'arroyo', id: 'perimetro', clave: 'perimetro', etiqueta: 'Perímetro mojado disponible (P)', unidad: 'm', min: 2, max: 12, paso: 0.05, dec: 2 },
@@ -182,9 +246,13 @@ function crearPanel() {
     f.setAttribute('aria-labelledby', b.id);
     f.innerHTML = `
       <p class="intro">${t.intro}</p>
+      ${t.red ? `<figure class="plano"><div class="svg-plano" role="img" aria-label="Plano de la red de distribución"></div><figcaption>Plano esquemático (sin escala). El color de cada vivienda es su presión en la hora pico con el tanque en el nivel de arranque: verde cumple, ocre está cerca del mínimo y rojo no cumple. Toca una vivienda para analizarla.</figcaption></figure>` : ''}
       <div class="controles"></div>
       <h3>Resultados</h3>
       <dl class="metricas"></dl>
+      ${t.red || t.id === 'tuberias' ? '<h3>Revisión del diseño</h3><ul class="revision"></ul>' : ''}
+      ${t.red ? `<h3>Zanja típica</h3><figure class="zanja"><div class="svg-zanja" role="img" aria-label="Corte de la zanja"></div><figcaption></figcaption></figure>
+        <h3>Cantidades de obra</h3><div class="tabla-cantidades"></div>` : ''}
       <h3>Modelo matemático</h3>
       <div class="ecuacion"></div>
       <figure class="grafica"><div class="lienzo"><canvas aria-label="Gráfica de ${t.nombre.toLowerCase()}"></canvas></div><figcaption></figcaption></figure>
@@ -202,11 +270,16 @@ function crearPanel() {
     const exp = f.querySelector('.experimento');
     fichas[t.id] = {
       raiz: f,
+      plano: f.querySelector('.svg-plano'),
+      revision: f.querySelector('.revision'),
+      zanja: f.querySelector('.svg-zanja'),
+      leyendaZanja: f.querySelector('.zanja figcaption'),
+      cantidades: f.querySelector('.tabla-cantidades'),
       controles: f.querySelector('.controles'),
       metricas: f.querySelector('.metricas'),
       ecuacion: f.querySelector('.ecuacion'),
       canvas: f.querySelector('canvas'),
-      leyenda: f.querySelector('figcaption'),
+      leyenda: f.querySelector('figure.grafica figcaption'),
       canvas2: graficaExtra?.querySelector('canvas'),
       leyenda2: graficaExtra?.querySelector('figcaption'),
       exp: exp && {
@@ -259,12 +332,47 @@ function crearPanel() {
       continue;
     }
     if (c.tipo === 'opciones') {
-      div.innerHTML = `<label for="c-${c.id}">${c.etiqueta}</label>
-        <select id="c-${c.id}">${c.opciones.map((o) => `<option value="${o.valor}">${o.nombre}</option>`).join('')}</select>`;
+      div.innerHTML = `<label for="c-${c.id}">${c.etiqueta}</label><select id="c-${c.id}"></select>`;
       const sel = div.querySelector('select');
+      llenarOpciones(sel, typeof c.opciones === 'function' ? c.opciones() : c.opciones);
       sel.value = String(p[c.clave]);
-      sel.addEventListener('change', () => { p[c.clave] = sel.value; cambio(); });
+      sel.addEventListener('change', () => { p[c.clave] = c.numero ? Number(sel.value) : sel.value; cambio(); });
       c.el = { sel, div };
+      destino.appendChild(div);
+      continue;
+    }
+    if (c.tipo === 'casilla') {
+      div.className = 'control casilla';
+      div.innerHTML = `<label><input type="checkbox" id="c-${c.id}"> ${c.etiqueta}</label>`;
+      const chk = div.querySelector('input');
+      chk.checked = Boolean(p[c.clave]);
+      chk.addEventListener('change', () => { p[c.clave] = chk.checked; cambio(); });
+      c.el = { chk, div };
+      destino.appendChild(div);
+      continue;
+    }
+    if (c.tipo === 'tubo') {
+      const t = c.tubo;
+      div.className = 'control tubo';
+      div.innerHTML = `<span class="etiqueta-tubo">${c.etiqueta}</span>
+        <div class="selects-tubo">
+          <label class="sr" for="m-${c.id}">Material</label><select id="m-${c.id}" title="Material">${Object.entries(D.MATERIALES).map(([k, m]) => `<option value="${k}" title="${m.nombre}">${m.corto} · C ${m.C}</option>`).join('')}</select>
+          <label class="sr" for="d-${c.id}">Diámetro</label><select id="d-${c.id}" title="Diámetro nominal"></select>
+          <label class="sr" for="k-${c.id}">Clase</label><select id="k-${c.id}" title="Clase de presión"></select>
+        </div>
+        <span class="extra"></span>`;
+      const [selM, selD, selK] = div.querySelectorAll('select');
+      selM.addEventListener('change', () => {
+        const antes = D.especTubo(p[`mat${t}`], p[`clase${t}`], p[`dn${t}`]);
+        p[`mat${t}`] = selM.value;
+        const m = D.MATERIALES[selM.value];
+        p[`clase${t}`] = m.clases.includes(p[`clase${t}`]) ? p[`clase${t}`] : m.clases[Math.min(2, m.clases.length - 1)];
+        p[`dn${t}`] = D.diametroCercano(selM.value, p[`clase${t}`], antes.DI);
+        cambio();
+      });
+      selD.addEventListener('change', () => { p[`dn${t}`] = selD.value; cambio(); });
+      selK.addEventListener('change', () => { p[`clase${t}`] = selK.value; cambio(); });
+      c.el = { selM, selD, selK, extra: div.querySelector('.extra'), div, tubo: true };
       destino.appendChild(div);
       continue;
     }
@@ -290,11 +398,47 @@ function crearPanel() {
   }
 }
 
+const escAttr = (v) => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+function llenarOpciones(sel, opciones) {
+  const clave = opciones.map((o) => `${o.valor}:${o.nombre}`).join('|');
+  if (sel.__clave === clave) return;
+  sel.innerHTML = opciones.map((o) => `<option value="${escAttr(o.valor)}">${escAttr(o.nombre)}</option>`).join('');
+  sel.__clave = clave;
+}
+
+function sincronizarTubo(c) {
+  const t = c.tubo;
+  const mat = p[`mat${t}`];
+  const m = D.MATERIALES[mat];
+  const e = r.especs?.[t] || D.especTubo(mat, p[`clase${t}`], p[`dn${t}`]);
+  c.el.selM.value = mat;
+  llenarOpciones(c.el.selD, m.diametros.map((dn) => {
+    const k = D.clasesValidas(mat, dn)[0] && (D.clasesValidas(mat, dn).includes(e.clase) ? e.clase : D.clasesValidas(mat, dn)[0]);
+    const di = k ? m.medidas(dn, k).di : NaN;
+    return { valor: dn, nombre: `${dn} (DI ${fmt(di, 1)} mm)` };
+  }));
+  c.el.selD.value = e.dn;
+  llenarOpciones(c.el.selK, D.clasesValidas(mat, e.dn).map((k) => ({ valor: k, nombre: `${k} · ${fmt(m.medidas(e.dn, k).pn * 101.97, 0)} m.c.a.` })));
+  c.el.selK.value = e.clase;
+  const txt = `${m.nombre}: DE ${fmt(e.DE * 1000, 1)} mm, DI ${fmt(e.DI * 1000, 1)} mm, espesor ${fmt(e.e * 1000, 2)} mm · presión de trabajo ${fmt(e.pnMPa, 2)} MPa (${fmt(e.pnMca, 0)} m.c.a.) · C = ${e.C}, ε = ${fmt(e.rugosidad * 1000, 4)} mm · ${m.norma}`;
+  if (c.el.extra.textContent !== txt) c.el.extra.textContent = txt;
+  c.el.extra.title = m.nota;
+}
+
 function sincronizarControles(origen) {
   for (const c of CONTROLES) {
     if (!c.el) continue;
     if (c.soloVidrio) c.el.div.hidden = p.expTubo !== 'vidrio';
-    if (c.el.sel) { c.el.sel.value = String(p[c.clave]); continue; }
+    if (c.soloAuto) c.el.div.hidden = p.controlBomba !== 'automatico';
+    if (c.soloHidrante) c.el.div.hidden = !p.hidrante;
+    if (c.el.tubo) { sincronizarTubo(c); continue; }
+    if (c.el.chk) { c.el.chk.checked = Boolean(p[c.clave]); continue; }
+    if (c.el.sel) {
+      if (typeof c.opciones === 'function') llenarOpciones(c.el.sel, c.opciones());
+      c.el.sel.value = String(p[c.clave]);
+      continue;
+    }
     const v = leerControl(c);
     const max = valorMax(c);
     c.el.rango.min = c.min;
@@ -312,12 +456,16 @@ function sincronizarControles(origen) {
 // ── Recalcular y pintar ─────────────────────────────────────────────────
 function aplicarRestricciones() {
   p.anchoCanal = limitar(p.anchoCanal, 0.2, p.perimetro - 0.2);
+  p.nRamales = Math.round(p.nRamales);
+  p.nViviendas = Math.round(p.nViviendas);
+  S.sincronizarTubos(p);
   sim.nivel = limitar(sim.nivel, 0, p.hMax);
 }
 
 function recalcular() {
   aplicarRestricciones();
-  r = M.calcularSistema(p, sim.nivel);
+  r = S.calcular(p, sim);
+  sim.bomba = r.bomba;
 }
 
 function cambio(origen) {
@@ -389,19 +537,121 @@ function datosExperimento() {
   };
 }
 
+// ── Plano de la red, zanja y cantidades ────────────────────────────────────
+const colorPresion = (pr, cerrada) => (cerrada ? 'var(--tinta-2)' : (pr < p.presionMinima ? 'var(--alerta)' : (pr < p.presionMinima + 3 ? 'var(--aviso)' : 'var(--ok)')));
+
+function planoRed() {
+  const rd = r.redDiseno;
+  const N = rd.N;
+  const K = rd.K;
+  const W = 360;
+  const H = 70 + N * 62;
+  const x0 = 34;
+  const xFin = W - 30;
+  const ancho = xFin - x0 - 60;
+  const yP = 34;
+  const yR = (j) => yP + 30 + (j - 1) * 62;
+  const xCasa = (k) => x0 + 50 + ((k - 0.5) / K) * ancho;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" class="svg-red">`;
+  const e = r.especs;
+  const grosor = (es) => Math.max(1.5, Math.min(7, es.DE * 60));
+  // principal (vertical a la izquierda desde la entrada)
+  svg += `<text x="${x0 - 22}" y="16" class="t-chica">Conducción</text>`;
+  svg += `<line x1="${x0}" y1="18" x2="${x0}" y2="${yR(N) + (p.hidrante ? 26 : 0)}" stroke="var(--agua)" stroke-width="${grosor(e.Principal)}" stroke-linecap="round"/>`;
+  svg += `<circle cx="${x0}" cy="22" r="4" fill="var(--panel)" stroke="var(--tinta)" stroke-width="1.5"/><text x="${x0 + 8}" y="26" class="t-chica">E · entrada (${fmt(rd.nodos.E.H - rd.nodos.E.cota, 1)} m)</text>`;
+  for (let j = 1; j <= N; j++) {
+    const y = yR(j);
+    const cerrado = p.ramalCerrado === j;
+    svg += `<line x1="${x0}" y1="${y}" x2="${xCasa(K) + 6}" y2="${y}" stroke="var(--agua)" stroke-opacity="${cerrado ? 0.3 : 1}" stroke-width="${grosor(e.Ramal)}" stroke-linecap="round"/>`;
+    svg += `<text x="${x0 + 6}" y="${y - 8}" class="t-chica">P${j}</text>`;
+    if (p.valvulasRamal) {
+      svg += `<g transform="translate(${x0 + 22},${y})"><rect x="-7" y="-7" width="14" height="14" fill="none" stroke="var(--tinta-2)" stroke-width="1"/><path d="M-5,-4 L5,4 L5,-4 L-5,4 Z" fill="${cerrado ? 'var(--alerta)' : 'var(--agua)'}"/><title>Válvula de compuerta del ramal ${j}${cerrado ? ' (cerrada)' : ''}</title></g>`;
+    }
+    for (let k = 1; k <= K; k++) {
+      const c = rd.casas.find((x) => x.j === j && x.k === k);
+      const xc = xCasa(k);
+      const sel = r.casa.id === c.id;
+      svg += `<line x1="${xc}" y1="${y}" x2="${xc}" y2="${y - 14}" stroke="var(--agua)" stroke-width="1.2"/>`;
+      svg += `<g class="casa-plano" data-casa="${c.id}" tabindex="0" role="button" aria-label="Vivienda ${c.id}, ${fmt(c.presion, 1)} m.c.a.">
+        <path d="M${xc - 9},${y - 14} v-12 l9,-8 l9,8 v12 z" fill="${colorPresion(c.presion, c.cerrada)}" stroke="${sel ? 'var(--tinta)' : 'none'}" stroke-width="${sel ? 2.2 : 0}"/>
+        <rect x="${xc - 3}" y="${y - 20}" width="6" height="4" fill="var(--panel)" opacity="0.8"/>
+        <title>Vivienda ${c.id}: ${c.cerrada ? 'ramal cerrado' : `${fmt(c.presion, 1)} m.c.a. con QMH; cota ${fmt(c.cota)} m`}</title></g>`;
+      if (sel) svg += `<text x="${xc}" y="${y + 13}" text-anchor="middle" class="t-chica t-sel">análisis</text>`;
+    }
+  }
+  const marca = (nodo, color, texto, dy = -10, dx = 7) => {
+    if (!nodo) return '';
+    const xx = nodo.tipo === 'casa' ? xCasa(Number(nodo.casa.split('-')[1])) : x0;
+    const yy = nodo.tipo === 'casa' ? yR(Number(nodo.casa.split('-')[0])) : (nodo.id === 'HI' ? yR(N) + 26 : yR(Number(nodo.id.slice(1))));
+    return `<g transform="translate(${xx},${yy})"><circle r="4.5" fill="${color}" stroke="var(--panel)" stroke-width="1.2"/><text x="${dx}" y="${dy + 14}" class="t-chica">${texto}</text></g>`;
+  };
+  if (p.valvulaAire) svg += marca(rd.puntoAlto, 'var(--ocre)', 'aire', -10, 9);
+  if (p.valvulaPurga) svg += marca(rd.puntoBajo, 'var(--tinta-2)', 'purga', 0);
+  if (p.hidrante) svg += marca(rd.nodos.HI, 'var(--alerta)', p.incendio ? 'hidrante (en uso)' : 'hidrante');
+  svg += '</svg>';
+  const leyenda = `<p class="leyenda-plano"><span><i style="background:var(--ok)"></i>cumple</span><span><i style="background:var(--aviso)"></i>cerca del mínimo</span><span><i style="background:var(--alerta)"></i>no cumple</span><span>grosor de la línea ∝ diámetro</span></p>`;
+  return svg + leyenda;
+}
+
+function zanjaSVG() {
+  const DE = r.especs.Principal.DE;
+  const z = D.zanja(p, DE);
+  const esc = 150 / Math.max(z.profundidad + 0.3, z.ancho + 0.6);
+  const W = 320;
+  const H = (z.profundidad + 0.35) * esc + 30;
+  const cx = W / 2;
+  const top = 20;
+  const a = z.ancho * esc;
+  const prof = z.profundidad * esc;
+  const ytubo = top + prof - p.cama * esc - (DE * esc) / 2;
+  const R = (DE * esc) / 2;
+  const yCinta = z.cinta ? top + prof - z.cinta * esc : null;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+    <rect x="0" y="${top}" width="${W}" height="${H - top}" fill="var(--ocre)" opacity="0.18"/>
+    <line x1="0" y1="${top}" x2="${W}" y2="${top}" stroke="var(--tinta-2)" stroke-width="1.5"/>
+    <rect x="${cx - a / 2}" y="${top}" width="${a}" height="${prof}" fill="var(--ocre)" opacity="0.38"/>
+    <rect x="${cx - a / 2}" y="${top + prof - p.cama * esc - DE * esc - 0.05 * esc}" width="${a}" height="${p.cama * esc + DE * esc + 0.05 * esc}" fill="#d9c49a" opacity="0.9"/>
+    <circle cx="${cx}" cy="${ytubo}" r="${R}" fill="var(--agua)" stroke="var(--panel)" stroke-width="1"/>
+    ${yCinta ? `<line x1="${cx - a / 2 + 4}" y1="${yCinta}" x2="${cx + a / 2 - 4}" y2="${yCinta}" stroke="var(--alerta)" stroke-width="3"/>` : ''}
+    <text x="${cx + a / 2 + 8}" y="${top + 14}" class="t-chica">Relleno compactado ${fmt(p.recubrimiento, 2)} m</text>
+    ${yCinta ? `<text x="${cx + a / 2 + 8}" y="${yCinta + 4}" class="t-chica" fill="var(--alerta)">Cinta de advertencia</text>` : ''}
+    <text x="${cx + a / 2 + 8}" y="${ytubo + 4}" class="t-chica">Tubería ${r.especs.Principal.dn}</text>
+    <text x="${cx + a / 2 + 8}" y="${top + prof - 2}" class="t-chica">Cama de apoyo ${fmt(p.cama * 100, 0)} cm</text>
+    <line x1="${cx - a / 2}" y1="${top + prof + 10}" x2="${cx + a / 2}" y2="${top + prof + 10}" stroke="var(--tinta-2)"/>
+    <text x="${cx}" y="${top + prof + 22}" text-anchor="middle" class="t-chica">${fmt(z.ancho, 2)} m</text>
+    <line x1="${cx - a / 2 - 10}" y1="${top}" x2="${cx - a / 2 - 10}" y2="${top + prof}" stroke="var(--tinta-2)"/>
+    <text x="${cx - a / 2 - 14}" y="${top + prof / 2}" text-anchor="end" class="t-chica">${fmt(z.profundidad, 2)} m</text>
+  </svg>`;
+  return { svg, leyenda: `Zanja de la tubería principal: ancho = DE + 2 × ${fmt(p.holgura, 2)} m (mínimo 0.50 m); profundidad = cama + DE + relleno. Excavación: ${fmt(z.area, 3)} m³ por metro.` };
+}
+
+function tablaCantidades() {
+  const filas = r.cantidades.filas.map(([item, det, cant, und]) =>
+    `<tr><td>${item}<small>${det}</small></td><td class="num">${fmt(cant, und === 'und' ? 0 : 1)}</td><td>${und}</td></tr>`).join('');
+  return `<table class="cantidades"><thead><tr><th>Ítem</th><th class="num">Cantidad</th><th>Unidad</th></tr></thead><tbody>${filas}</tbody></table>`;
+}
+
+function revisionHTML(lista) {
+  return lista.map((c) => `<li data-nivel="${c.nivel}"><span class="marca-rev">${c.nivel === 'ok' ? '✓' : (c.nivel === 'aviso' ? '!' : '✗')}</span><span>${c.texto}<small>${c.detalle}</small></span></li>`).join('');
+}
+
 const PINTORES = {
   captacion() {
     const desnivel = p.cotaTanque + sim.nivel - p.cotaRio;
     const c = r.costo;
     const d = r.desarenador;
     const dmm = d.dMin * 1000;
-    const hayFlujo = r.Qin > 0;
+    const hayFlujo = p.Qbombeo > 0;
     return {
       metricas: metricas([
         ['<b>Bombeo y energía</b>', '', ''],
+        ['Estado de la bomba', r.bomba ? 'Encendida' : `Apagada: tanque en el nivel de parada (arranca a ${fmt(p.nivelArranque)} m)`, '', r.bomba ? 'ok' : 'aviso'],
         ['Altura dinámica de bombeo', fmt(r.alturaBombeo), 'm'],
         ['Desnivel río → superficie del tanque', fmt(desnivel), 'm'],
+        ['Pérdida en la succión', fmt(r.succion.hfReal, 3), 'm'],
+        ['Velocidad en la succión', fmt(r.succion.V), 'm/s', r.succion.V <= p.VmaxSuccion ? 'ok' : 'aviso'],
         ['Pérdida por fricción en la aducción', fmt(r.aduccion.hfReal), 'm'],
+        ['Horas de bombeo al día', `${fmt(r.horasDia, 1)}${p.controlBomba === 'automatico' ? ' (las fija el control por niveles)' : ''}`, 'h'],
         ['Potencia de la bomba', fmt(r.potencia / 1000), 'kW'],
         ['Volumen bombeado al mes', fmt(r.Vmes), 'm³'],
         ['Energía consumida al mes', fmt(c.energia), 'kWh'],
@@ -417,7 +667,7 @@ const PINTORES = {
       ecuacion: [
         ecu.tipo('Decimales: volumen mensual'),
         ecu.formula(`${i('V')} = ${i('Q')} · horas · 3600 · 30`),
-        ecu.sust(`${i('V')} = ${fmt(lps(p.Qbombeo), 5)} × ${fmt(p.horasDia, 1)} × 3600 × 30 = ${fmt(r.Vmes)} m³`),
+        ecu.sust(`${i('V')} = ${fmt(lps(p.Qbombeo), 5)} × ${fmt(r.horasDia, 1)} × 3600 × 30 = ${fmt(r.Vmes)} m³`),
         ecu.tipo('Ecuación lineal: costo de bombeo'),
         ecu.formula(`${i('C')}(${i('V')}) = ${i('m')} · ${i('V')} + ${i('b')}`),
         ecu.formula(`${i('m')} = tarifa · ρ${i('g')}${i('H')} / (η · 3.6×10⁶)`),
@@ -469,39 +719,62 @@ const PINTORES = {
 
   tuberias() {
     const a = r.aduccion;
-    const d = r.distribucion;
-    const fila = (nombre, t, Q) => [
+    const d = r.conduccion;
+    const e = r.especs;
+    const hazen = p.metodoPerdidas === 'hazen';
+    const fila = (nombre, t, Q, es) => [
       [`<b>${nombre}</b>`, '', ''],
-      ['Velocidad media', fmt(t.V), 'm/s'],
+      ['Tubería', `${es.nombre}, ${es.dn} ${es.clase}`, ''],
+      ['Diámetro interno', fmt(es.DI * 1000, 1), 'mm'],
+      ['Presión de trabajo', `${fmt(es.pnMPa, 2)} MPa = ${fmt(es.pnMca, 0)}`, 'm.c.a.'],
+      ['Caudal', fmt(M.m3sAlps(Q)), 'L/s'],
+      ['Velocidad media', fmt(t.V), 'm/s', t.V < p.Vmin || t.V > p.Vmax ? 'aviso' : 'ok'],
       ['Número de Reynolds', `${fmt(t.Re, 0)} (${t.regimen})`, '', t.regimen === 'laminar' ? 'ok' : 'aviso'],
       ['Pérdida con la recta laminar', fmt(t.hfLineal), 'm'],
-      ['Pérdida real (Darcy-Weisbach)', fmt(t.hfReal), 'm'],
-      ['Caudal', fmt(M.m3sAlps(Q)), 'L/s'],
+      [hazen ? 'Pérdida real (Hazen-Williams)' : 'Pérdida real (Darcy-Weisbach)', fmt(t.hfReal), 'm'],
     ];
     const turbulento = d.regimen !== 'laminar';
+    const g = r.golpe;
     return {
-      metricas: metricas([...fila('Aducción', a, r.Qin), ...fila('Distribución', d, r.Qsal)]),
+      metricas: metricas([
+        ...fila('Aducción (bomba encendida)', a, lps(p.Qbombeo), e.Aduccion),
+        ['Celeridad de la onda de presión', fmt(g.a, 0), 'm/s'],
+        ['Golpe de ariete al apagar la bomba', `+${fmt(g.dH, 1)}`, 'm'],
+        ['Presión máxima en la aducción', `${fmt(r.alturaBombeo + g.dH, 1)} de ${fmt(e.Aduccion.pnMca, 0)}`, 'm.c.a.', r.alturaBombeo + g.dH <= e.Aduccion.pnMca ? 'ok' : 'alerta'],
+        ...fila('Conducción (caudal de este instante)', d, r.Qsal, e.Conduccion),
+      ]),
+      revision: r.checks.filter((c) => /Succión|Aducción|Conducción/.test(c.texto)),
       ecuacion: [
-        ecu.tipo('Decimales: continuidad en la distribución'),
-        ecu.formula(`${i('V')} = ${i('Q')} / ${i('A')},  ${i('A')} = π${i('D')}²/4`),
-        ecu.sust(`${i('A')} = π × ${fmt(p.Ddistribucion, 4)}² / 4 = ${fmt(M.areaCircular(p.Ddistribucion), 6)} m²;  ${i('V')} = ${fmt(r.Qsal, 5)} / ${fmt(M.areaCircular(p.Ddistribucion), 6)} = ${fmt(d.V)} m/s`),
+        ecu.tipo('Decimales: diámetro interno y continuidad en la conducción'),
+        ecu.formula(`${i('D')}<sub>i</sub> = ${i('D')}<sub>e</sub> − 2${i('e')},  ${i('V')} = ${i('Q')} / ${i('A')},  ${i('A')} = π${i('D')}<sub>i</sub>²/4`),
+        ecu.sust(`${i('D')}<sub>i</sub> = ${fmt(e.Conduccion.DE * 1000, 2)} − 2 × ${fmt(e.Conduccion.e * 1000, 2)} = ${fmt(e.Conduccion.DI * 1000, 2)} mm;  ${i('V')} = ${fmt(r.Qsal, 5)} / ${fmt(M.areaCircular(p.Ddistribucion), 6)} = ${fmt(d.V)} m/s`),
         ecu.tipo('Ecuación lineal: pérdida en régimen laminar (Hagen-Poiseuille)'),
         ecu.formula(`${i('h')}<sub>f</sub> = ${i('k')} · ${i('Q')},  ${i('k')} = 128 μ${i('L')} / (π ρ ${i('g')} ${i('D')}⁴)`),
-        ecu.sust(`${i('k')} = 128 × 0.00089 × ${fmt(p.Ldistribucion)} / (π × 997.05 × 9.81 × ${fmt(p.Ddistribucion, 4)}⁴) = ${fmt(d.k)} s/m²`),
-        ecu.sust(`${i('h')}<sub>f</sub> = ${fmt(d.k)} × ${fmt(r.Qsal, 5)} = ${fmt(d.hfLineal)} m`),
-        turbulento
-          ? ecu.nota(`Con Re = ${fmt(d.Re, 0)} el flujo es ${d.regimen}: la recta laminar solo es válida por debajo de Re = 2000 y aquí subestima la pérdida. Para la presión de la vivienda se usa Darcy-Weisbach con f = ${fmt(d.f, 4)}, que da ${fmt(d.hfReal)} m.`, true)
-          : ecu.nota('El flujo es laminar (Re < 2000), así que la recta de Hagen-Poiseuille es la pérdida real.'),
+        ecu.sust(`${i('k')} = 128 × 0.00089 × ${fmt(p.Ldistribucion)} / (π × 997.05 × 9.81 × ${fmt(p.Ddistribucion, 4)}⁴) = ${fmt(d.k)} s/m²;  ${i('h')}<sub>f</sub> = ${fmt(d.k)} × ${fmt(r.Qsal, 5)} = ${fmt(d.hfLineal)} m`),
+        hazen
+          ? ecu.tipo('Hazen-Williams: pérdida con el coeficiente C del material')
+          : ecu.tipo('Darcy-Weisbach: pérdida con la rugosidad del material'),
+        hazen
+          ? ecu.formula(`${i('h')}<sub>f</sub> = 10.67 · ${i('L')} · ${i('Q')}<sup>1.852</sup> / (${i('C')}<sup>1.852</sup> · ${i('D')}<sup>4.87</sup>)`)
+          : ecu.formula(`${i('h')}<sub>f</sub> = ${i('f')} (${i('L')}/${i('D')}) ${i('V')}²/2${i('g')},  ${i('f')} = 0.25 / [log(ε/3.7${i('D')} + 5.74/${i('Re')}<sup>0.9</sup>)]²`),
+        hazen
+          ? ecu.sust(`${i('h')}<sub>f</sub> = 10.67 × ${fmt(p.Ldistribucion)} × ${fmt(r.Qsal, 5)}<sup>1.852</sup> / (${e.Conduccion.C}<sup>1.852</sup> × ${fmt(p.Ddistribucion, 4)}<sup>4.87</sup>) = ${fmt(d.hfReal)} m`)
+          : ecu.sust(`${i('f')} = ${fmt(d.f, 4)} (ε = ${fmt(e.Conduccion.rugosidad * 1000, 4)} mm);  ${i('h')}<sub>f</sub> = ${fmt(d.f, 4)} × (${fmt(p.Ldistribucion)} / ${fmt(p.Ddistribucion, 4)}) × ${fmt(d.V)}² / 19.62 = ${fmt(d.hfReal)} m`),
+        turbulento ? ecu.nota(`Con Re = ${fmt(d.Re, 0)} el flujo es ${d.regimen}: la recta laminar subestima la pérdida.`, true) : ecu.nota('El flujo es laminar (Re < 2000): la recta de Hagen-Poiseuille es la pérdida real.'),
+        ecu.tipo('Decimales: golpe de ariete al apagar la bomba (Joukowsky)'),
+        ecu.formula(`${i('a')} = √(${i('K')}/ρ) / √(1 + ${i('K')}${i('D')}/(${i('E')}${i('e')})),  Δ${i('H')} = ${i('a')}·${i('V')}/${i('g')}`),
+        ecu.sust(`${i('a')} = 1486 / √(1 + 2.2×10⁹ × ${fmt(e.Aduccion.DI, 4)} / (${(e.Aduccion.E / 1e9).toFixed(1)}×10⁹ × ${fmt(e.Aduccion.e, 4)})) = ${fmt(g.a, 0)} m/s;  Δ${i('H')} = ${fmt(g.a, 0)} × ${fmt(a.V, 3)} / 9.81 = ${fmt(g.dH, 1)} m`),
+        ecu.nota('Cada vez que el interruptor de nivel apaga la bomba, el agua de la aducción se frena y aparece una onda de presión. Δ<i>H</i> es el caso más severo (paro instantáneo): en la práctica se reduce con cierre lento de la válvula de retención o con una válvula anticipadora. El material cambia mucho la celeridad: el PEAD, flexible, la baja; el hierro dúctil, rígido, la sube.'),
       ].join(''),
-      leyenda: 'Pérdida en la tubería de distribución según el caudal. La recta es el modelo laminar; la curva es la pérdida real cuando el flujo es turbulento.',
-      grafica(g) {
+      leyenda: `Pérdida en la tubería de conducción según el caudal. La recta es el modelo laminar; la curva es la pérdida real con ${hazen ? 'Hazen-Williams' : 'Darcy-Weisbach'}.`,
+      grafica(gr) {
         const c = paleta();
         const L = p.Ldistribucion;
-        const D = p.Ddistribucion;
+        const Dd = p.Ddistribucion;
         const qs = Array.from({ length: 61 }, (_, k) => 0.5 * k);
-        const lineal = [0, 30].map((q) => ({ x: q, y: M.perdidaLaminar(lps(q), L, D) }));
-        const real = qs.map((q) => ({ x: q, y: M.analisisTuberia(lps(q), L, D).hfReal }));
-        actualizarGrafica(g, [
+        const lineal = [0, 30].map((q) => ({ x: q, y: M.perdidaLaminar(lps(q), L, Dd) }));
+        const real = qs.map((q) => ({ x: q, y: D.tramo(lps(q), L, e.Conduccion, p.metodoPerdidas).hfReal }));
+        actualizarGrafica(gr, [
           serieLinea('Recta laminar h = kQ', lineal, c.agua),
           serieLinea('Pérdida real', real, c.piezo, { punteada: true }),
           seriePuntos('Caudal actual', [{ x: M.m3sAlps(r.Qsal), y: d.hfReal }], c.ocre),
@@ -515,11 +788,28 @@ const PINTORES = {
   tanque() {
     const m = r.pendienteNivel;
     const balance = M.m3sAlps(r.Qent - r.Qsal);
-    let tiempo = ['Tiempo para llenarse', fmtTiempo(r.tLleno), ''];
-    if (m < 0) tiempo = ['Tiempo para vaciarse', fmtTiempo(r.tVacio), '', r.tVacio < 12 * 3600 ? 'alerta' : 'aviso'];
+    const auto = p.controlBomba === 'automatico';
+    let tiempo = ['Tiempo para llegar a la parada', fmtTiempo(r.tLleno), ''];
+    if (m < 0) tiempo = [auto && !r.bomba ? 'Tiempo para que la bomba arranque' : 'Tiempo para vaciarse', fmtTiempo(r.tVacio), '', !auto || r.bomba ? 'aviso' : ''];
     if (m === 0) tiempo = ['Tendencia del nivel', r.vacio ? 'vacío, sin reserva' : (r.lleno ? 'lleno y rebosando' : 'estable'), '', r.vacio ? 'alerta' : ''];
+    const ci = r.ciclo;
+    const dm = r.demanda;
+    const hh = Math.floor(r.hora);
+    const mm = Math.floor((r.hora - hh) * 60);
     return {
       metricas: metricas([
+        ['<b>Bomba</b>', '', ''],
+        ['Estado de la bomba', r.bomba ? 'Encendida' : 'Apagada', '', r.bomba ? 'ok' : 'aviso'],
+        ...(auto ? [
+          ['Se apaga al llegar a', fmt(p.nivelParada), 'm'],
+          ['Vuelve a arrancar al bajar a', fmt(p.nivelArranque), 'm'],
+          ['Volumen entre arranque y parada', fmt(ci.dV, 1), 'm³'],
+          ['Ciclo con consumo igual al QMD', `${fmtTiempo(ci.tLlenado)} encendida + ${fmtTiempo(ci.tVaciado)} apagada`, ''],
+          ['Arranques por hora', fmt(ci.arranquesHora, 2), '', ci.arranquesHora <= p.arranquesMax ? 'ok' : 'aviso'],
+          ['Horas de bombeo al día (promedio)', fmt(ci.horasDia, 1), 'h'],
+          ['Arranques en esta simulación', String(sim.arranques), ''],
+        ] : [['Horas de bombeo al día', '24', 'h']]),
+        ['<b>Nivel y caudales</b>', '', ''],
         ['Nivel actual', fmt(sim.nivel), 'm', r.vacio ? 'alerta' : ''],
         ['Volumen almacenado', `${fmt(r.volumen)} de ${fmt(r.volumenMax)}`, 'm³'],
         ['Caudal que entra', fmt(M.m3sAlps(r.Qent)), 'L/s'],
@@ -528,61 +818,177 @@ const PINTORES = {
         ['Cambio del nivel', fmt(m * 3600 * 100), 'cm/h'],
         tiempo,
         ...(r.rebose > 0 ? [['Rebose por el aliviadero', fmt(M.m3sAlps(r.rebose)), 'L/s', 'aviso']] : []),
+        ['<b>Consumo</b>', '', ''],
+        ['Hora del día', `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`, ''],
+        ['Factor de consumo de esta hora', fmt(r.factor, 2), '× QMD'],
+        ['Caudal medio diario Qmd', fmt(M.m3sAlps(dm.Qmd)), 'L/s'],
+        ['Caudal máximo diario QMD = k1·Qmd', fmt(M.m3sAlps(dm.QMD)), 'L/s'],
+        ['Caudal máximo horario QMH = k2·QMD', fmt(M.m3sAlps(dm.QMH)), 'L/s'],
+        ...(p.curvaDemanda === 'horaria' ? [['Volumen de regulación necesario', `${fmt(r.regulacion.V, 1)} (${fmt(r.regulacion.fraccion * 100, 1)} % del QMD diario)`, 'm³', r.regulacion.V <= r.volumenMax ? 'ok' : 'alerta']] : []),
       ]),
       ecuacion: [
-        ecu.tipo('Decimales: área y volumen del tanque'),
-        ecu.sust(`${i('A')} = π × ${fmt(p.Dtanque)}² / 4 = ${fmt(r.At)} m²;  ${i('V')} = ${fmt(r.At)} × ${fmt(sim.nivel)} = ${fmt(r.volumen)} m³`),
+        ecu.tipo('Decimales: caudales de diseño'),
+        ecu.formula(`${i('Q')}<sub>md</sub> = QMD / ${i('k')}<sub>1</sub>,  QMH = ${i('k')}<sub>2</sub> · QMD`),
+        ecu.sust(`${i('Q')}<sub>md</sub> = ${fmt(p.Qdemanda)} / ${fmt(p.k1)} = ${fmt(M.m3sAlps(dm.Qmd))} L/s;  QMH = ${fmt(p.k2)} × ${fmt(p.Qdemanda)} = ${fmt(M.m3sAlps(dm.QMH))} L/s`),
         ecu.tipo('Ecuación lineal: nivel en el tiempo'),
         ecu.formula(`${i('h')}(${i('t')}) = ${i('h')}₀ + ${i('m')} · ${i('t')},  ${i('m')} = (${i('Q')}<sub>e</sub> − ${i('Q')}<sub>s</sub>) / ${i('A')}`),
         ecu.sust(`${i('m')} = (${fmt(r.Qent, 5)} − ${fmt(r.Qsal, 5)}) / ${fmt(r.At)} = ${fmt(m * 3600, 4)} m/h`),
-        ecu.sust(`${i('h')}(${i('t')}) = ${fmt(sim.nivel)} ${m < 0 ? '−' : '+'} ${fmt(Math.abs(m * 3600), 4)} · ${i('t')}  (${i('t')} en horas)`),
-        ecu.nota('Despejando t de la recta se obtiene cuánto falta para que el tanque se llene o se quede vacío. Cuando se vacía, el sector solo recibe lo que entra por bombeo.'),
+        ...(auto ? [
+          ecu.tipo('Ecuación lineal: ciclo de la bomba'),
+          ecu.formula(`${i('t')}<sub>enc</sub> = Δ${i('V')} / (${i('Q')}<sub>b</sub> − ${i('Q')}<sub>s</sub>),  ${i('t')}<sub>apag</sub> = Δ${i('V')} / ${i('Q')}<sub>s</sub>,  Δ${i('V')} = ${i('A')}(${i('h')}<sub>parada</sub> − ${i('h')}<sub>arranque</sub>)`),
+          ecu.sust(`Δ${i('V')} = ${fmt(r.At)} × (${fmt(p.nivelParada)} − ${fmt(p.nivelArranque)}) = ${fmt(ci.dV, 1)} m³;  ${i('t')}<sub>enc</sub> = ${fmtTiempo(ci.tLlenado)},  ${i('t')}<sub>apag</sub> = ${fmtTiempo(ci.tVaciado)}`),
+        ] : []),
+        ecu.nota('Entre los dos interruptores el nivel sube con pendiente (Q<sub>b</sub> − Q<sub>s</sub>)/A con la bomba encendida y baja con pendiente −Q<sub>s</sub>/A con la bomba apagada: el nivel dibuja un diente de sierra. Separar más los niveles alarga el ciclo y reduce los arranques del motor. En la segunda gráfica, el área por debajo del QMD es el agua que el tanque guarda y la que queda por encima es la que entrega en las horas pico; las dos áreas son iguales en el día.'),
       ].join(''),
-      leyenda: 'Proyección del nivel para las próximas 48 horas con los caudales actuales. La recta se detiene al llegar al fondo o al borde del tanque.',
+      leyenda: 'Proyección del nivel para las próximas 48 horas con el control de la bomba y la curva de consumo. Las líneas punteadas son los niveles de arranque y parada; la franja inferior indica cuándo está encendida la bomba.',
       grafica(g) {
         const c = paleta();
         const pts = [];
-        let h = sim.nivel;
-        for (let hora = 0; hora <= 48; hora += 0.5) {
-          pts.push({ x: hora, y: h });
-          h = M.avanzarNivel(p, h, 1800);
+        const enc = [];
+        let st = { nivel: sim.nivel, bomba: r.bomba, t: sim.t };
+        for (let hora = 0; hora <= 48; hora += 0.25) {
+          pts.push({ x: hora, y: st.nivel });
+          enc.push({ x: hora, y: st.bomba ? 0.25 : 0 });
+          st = D.avanzarTanque(p, st, 900);
         }
         actualizarGrafica(g, [
           serieLinea('Nivel h(t)', pts, c.agua),
+          serieLinea('Bomba encendida', enc, c.ok, { ancho: 1.5, escalon: true, relleno: 'origin', colorRelleno: `${c.ok}55` }),
+          ...(auto ? [
+            serieLinea('Parada', [{ x: 0, y: p.nivelParada }, { x: 48, y: p.nivelParada }], c.alerta, { punteada: true, ancho: 1 }),
+            serieLinea('Arranque', [{ x: 0, y: p.nivelArranque }, { x: 48, y: p.nivelArranque }], c.ok, { punteada: true, ancho: 1 }),
+          ] : []),
           serieLinea('Altura útil', [{ x: 0, y: p.hMax }, { x: 48, y: p.hMax }], c.tinta2, { punteada: true, ancho: 1 }),
           seriePuntos('Ahora', [{ x: 0, y: sim.nivel }], c.ocre),
         ], { x: { min: 0, max: 48 }, y: { min: 0, max: Math.ceil(p.hMax + 0.5) } });
       },
       ejes: { xTitulo: 'Horas desde ahora', yTitulo: 'Nivel (m)', formatoX: (v) => fmt(v, 0), formatoY: (v) => fmt(v, 1) },
+      extra: {
+        leyenda: 'Consumo del sector a lo largo del día frente al caudal máximo diario (QMD). Azul: el consumo es menor y el tanque sube; naranja: el consumo es mayor y el tanque baja. El pico es el caudal máximo horario (QMH).',
+        grafica(g) {
+          const col = paleta();
+          const QMD = p.Qdemanda;
+          const curva = [];
+          for (let k = 0; k <= 96; k++) {
+            const h = k / 4;
+            curva.push({ x: h, y: QMD * (p.curvaDemanda === 'horaria' ? D.factorConsumo(h, p.k2) : 1) });
+          }
+          const base = curva.map((pt) => ({ x: pt.x, y: QMD }));
+          actualizarGrafica(g, [
+            serieLinea('QMD', base, col.tinta2, { punteada: true, ancho: 1.5 }),
+            serieLinea('Tanque subiendo', curva.map((pt) => ({ x: pt.x, y: Math.min(pt.y, QMD) })), 'transparent', { ancho: 0, relleno: 0, colorRelleno: `${col.agua}55` }),
+            serieLinea('Tanque bajando', curva.map((pt) => ({ x: pt.x, y: Math.max(pt.y, QMD) })), 'transparent', { ancho: 0, relleno: 0, colorRelleno: `${col.piezo}66` }),
+            serieLinea('Consumo Q(h)', curva, col.agua),
+            serieLinea('QMH', [{ x: 0, y: M.m3sAlps(r.demanda.QMH) }, { x: 24, y: M.m3sAlps(r.demanda.QMH) }], col.alerta, { punteada: true, ancho: 1 }),
+            serieLinea('Qmd', [{ x: 0, y: M.m3sAlps(r.demanda.Qmd) }, { x: 24, y: M.m3sAlps(r.demanda.Qmd) }], col.ok, { punteada: true, ancho: 1 }),
+            seriePuntos('Ahora', [{ x: r.hora, y: M.m3sAlps(r.QsalDem) }], col.ocre),
+          ], { x: { min: 0, max: 24 }, y: { min: 0, max: Math.ceil(M.m3sAlps(r.demanda.QMH) * 1.15) } });
+        },
+        ejes: { xTitulo: 'Hora del día', yTitulo: 'Caudal (L/s)', formatoX: (v) => fmt(v, 0), formatoY: (v) => fmt(v, 1) },
+      },
+    };
+  },
+
+  red() {
+    const rd = r.redDiseno;
+    const ra = r.red;
+    const e = r.especs;
+    const nC = rd.N * rd.K;
+    const pMin = p.presionMinima;
+    return {
+      metricas: metricas([
+        ['Viviendas', `${nC} (${rd.N} ramales × ${rd.K})`, ''],
+        ['Demanda media por vivienda', fmt(r.qMedCasa * 1000, 4), 'L/s'],
+        ['QMH por vivienda', fmt(r.qCasaQMH * 1000, 4), 'L/s'],
+        ['Caudal de diseño de la red (QMH)', fmt(rd.Qred * 1000, 3), 'L/s'],
+        ['Parte del QMH de todo el sector', fmt(100 * rd.Qred / (r.demanda.QMH || 1), 1), '%'],
+        ...(rd.qIncendio > 0 ? [['Incluye el hidrante', fmt(rd.qIncendio * 1000, 1), 'L/s', 'aviso']] : []),
+        ['Presión mínima con QMH', `${fmt(rd.presionMin, 1)} (${rd.critica.id})`, 'm.c.a.', rd.presionMin >= pMin ? 'ok' : 'alerta'],
+        ['Presión estática máxima', fmt(rd.estaticaMax, 1), 'm.c.a.', rd.estaticaMax <= p.presionMaxRed ? 'ok' : 'aviso'],
+        ['Presión mínima en este instante', fmt(ra.presionMin, 1), 'm.c.a.'],
+        ['Velocidad máxima en la red', fmt(rd.Vmax, 3), 'm/s'],
+        ['Punto alto (válvula de aire)', `${rd.puntoAlto.id}, cota ${fmt(rd.puntoAlto.cota)}`, 'm'],
+        ['Punto bajo (válvula de purga)', `${rd.puntoBajo.id}, cota ${fmt(rd.puntoBajo.cota)}`, 'm'],
+        ['Tubería principal', `${e.Principal.dn} ${e.Principal.clase}, ${fmt(rd.longitudPrincipal, 0)}`, 'm'],
+        ['Ramales', `${e.Ramal.dn} ${e.Ramal.clase}, ${fmt(rd.longitudRamales, 0)}`, 'm'],
+      ]),
+      revision: r.checks.filter((c) => /Red|Acometida|Válvula|compuerta/.test(c.texto)),
+      ecuacion: [
+        ecu.tipo('Decimales: demanda de una vivienda'),
+        ecu.formula(`${i('q')}<sub>md</sub> = hab · dotación / (1 − pérdidas) / 86 400,  QMH = ${i('k')}<sub>1</sub>${i('k')}<sub>2</sub> · ${i('q')}<sub>md</sub>`),
+        ecu.sust(`${i('q')}<sub>md</sub> = ${fmt(p.habitantes, 1)} × ${fmt(p.dotacion, 0)} / (1 − ${fmt(p.perdidas)}) / 86 400 = ${fmt(r.qMedCasa * 1000, 4)} L/s;  QMH = ${fmt(p.k1)} × ${fmt(p.k2)} × ${fmt(r.qMedCasa * 1000, 4)} = ${fmt(r.qCasaQMH * 1000, 4)} L/s`),
+        ecu.tipo('Ecuación lineal: caudal acumulado en una red ramificada'),
+        ecu.formula(`${i('Q')}<sub>tramo</sub> = Σ ${i('q')} de las viviendas aguas abajo (+ hidrante)`),
+        ecu.sust(`Primer tramo de la principal: ${i('Q')} = ${nC} × ${fmt(r.qCasaQMH * 1000, 4)}${rd.qIncendio ? ` + ${fmt(rd.qIncendio * 1000, 1)}` : ''} = ${fmt(rd.tramos[0].Q * 1000, 3)} L/s`),
+        ecu.tipo('Decimales: presión en cada nodo'),
+        ecu.formula(`${i('p')}/γ = ${i('H')}<sub>entrada</sub> − Σ ${i('h')}<sub>f</sub> − ${i('z')}<sub>nodo</sub>`),
+        ecu.sust(`Vivienda ${rd.critica.id}: ${fmt(rd.critica.Hn)} − ${fmt(rd.critica.cota)} = ${fmt(rd.critica.presion)} m.c.a.`),
+        ecu.nota('El peor caso de diseño es la hora pico (QMH) con el tanque en el nivel de arranque de la bomba. La presión estática máxima se revisa con el tanque lleno y sin consumo, y debe quedar por debajo de la presión de trabajo de la tubería. Los criterios son valores de referencia editables; contrastarlos con el RAS (Resolución 0330 de 2017).'),
+      ].join(''),
+      leyenda: 'Perfil desde la entrada del barrio hasta la vivienda de análisis: cota piezométrica (línea de energía) y cota del terreno. La distancia vertical entre ellas es la presión.',
+      grafica(g) {
+        const c = paleta();
+        const id = r.casa.id;
+        const [j, k] = id.split('-').map(Number);
+        const camino = ['E', ...Array.from({ length: j }, (_, x) => `P${x + 1}`), ...Array.from({ length: k }, (_, x) => `R${j}-${x + 1}`)];
+        let dist = 0;
+        let prev = null;
+        const piezo = [];
+        const terreno = [];
+        for (const nid of camino) {
+          const n = ra.nodos[nid];
+          if (prev) dist += Math.hypot(n.x - prev.x, n.s - prev.s);
+          piezo.push({ x: dist, y: n.H });
+          terreno.push({ x: dist, y: n.cota });
+          prev = n;
+        }
+        actualizarGrafica(g, [
+          serieLinea('Cota piezométrica', piezo, c.piezo),
+          serieLinea('Terreno', terreno, c.ocre, { relleno: 'origin', colorRelleno: `${c.ocre}33` }),
+          serieLinea(`Presión mínima (${fmt(pMin, 0)} m)`, terreno.map((t) => ({ x: t.x, y: t.y + pMin })), c.alerta, { punteada: true, ancho: 1 }),
+        ], { x: { min: 0 }, y: { min: Math.floor(Math.min(...terreno.map((t) => t.y)) - 2) } });
+      },
+      ejes: { xTitulo: 'Distancia desde la entrada del barrio (m)', yTitulo: 'Cota (m)', formatoX: (v) => fmt(v, 0), formatoY: (v) => fmt(v, 0) },
+      red: { plano: planoRed(), zanja: zanjaSVG(), cantidades: tablaCantidades() },
     };
   },
 
   vivienda() {
     const H = r.Hcasa;
+    const gfo = r.grifo;
     const K = p.K0 / (p.apertura * p.apertura);
     const k = M.coeficientesChorro(p.alturaGrifo, Math.max(r.vGrifo, 1e-9));
-    const nivelPresion = H <= 0 ? 'alerta' : (H < p.presionMinima ? 'aviso' : 'ok');
+    const nivelPresion = r.Hnodo < p.presionMinima ? 'aviso' : 'ok';
     const estados = {
       normal: ['Servicio normal', 'ok'],
-      'baja-presion': ['Presión por debajo de la referencia', 'aviso'],
+      'baja-presion': ['Presión en la red por debajo de la referencia', 'aviso'],
       deficit: ['Desabastecimiento: tanque vacío', 'alerta'],
       'sin-agua': ['No llega agua', 'alerta'],
     };
-    const [txtEstado, nivelEstado] = estados[r.estado];
+    const [txtEstado, nivelEstado] = r.casa.cerrada ? ['Ramal cerrado: la vivienda no recibe agua', 'alerta'] : estados[r.estado];
+    const ea = r.especs.Acometida;
     return {
       metricas: metricas([
+        ['Vivienda de análisis', `Ramal ${r.casa.j}, vivienda ${r.casa.k}${p.casaAnalisis === 'auto' ? ' (la crítica)' : ''}`, ''],
         ['Estado del servicio', txtEstado, '', nivelEstado],
-        ['Carga disponible en el grifo', fmt(H), 'm.c.a.', nivelPresion],
-        ['Presión', fmt(r.presionCasa), 'kPa'],
-        ['Pérdida en la distribución', fmt(r.distribucion.hfReal), 'm'],
+        ['Presión en la red frente a la vivienda', fmt(r.Hnodo), 'm.c.a.', nivelPresion],
+        ['Pérdida en la tubería de servicio', fmt(gfo.hf, 2), 'm'],
+        ['Pérdida en el medidor', fmt(gfo.hm, 2), 'm'],
+        ['Pérdida en la llave de paso', fmt(gfo.hl, 3), 'm'],
+        ['Carga disponible en el grifo', fmt(H), 'm.c.a.', H <= 0 ? 'alerta' : 'ok'],
+        ['Presión en el grifo', fmt(r.presionCasa), 'kPa'],
         ['Velocidad de salida', fmt(r.vGrifo), 'm/s'],
         ['Caudal en el grifo', `${fmt(r.qGrifo * 1000)} L/s, ${fmt(r.qGrifo * 60000, 1)}`, 'L/min'],
         ['Alcance del chorro', fmt(r.alcance), 'm'],
+        ['Tubería de servicio', `${D.MATERIALES[ea.mat].corto} ${ea.dn} ${ea.clase}, DI ${fmt(ea.DI * 1000, 1)}`, 'mm'],
       ]),
       ecuacion: [
         ecu.tipo('Decimales: carga disponible en el grifo'),
-        ecu.formula(`${i('H')} = (${i('z')}<sub>tanque</sub> + ${i('h')}) − ${i('z')}<sub>grifo</sub> − ${i('h')}<sub>f</sub>`),
-        ecu.sust(`${i('H')} = (${fmt(p.cotaTanque)} + ${fmt(sim.nivel)}) − (${fmt(p.cotaCasa)} + ${fmt(p.alturaGrifo)}) − ${fmt(r.distribucion.hfReal)} = ${fmt(H)} m.c.a.`),
+        ecu.formula(`${i('H')} = ${i('H')}<sub>red</sub> − ${i('z')}<sub>grifo</sub> − ${i('h')}<sub>f,servicio</sub> − ${i('h')}<sub>medidor</sub> − ${i('h')}<sub>llave</sub>`),
+        ecu.sust(`${i('H')} = ${fmt(r.casa.Hn)} − (${fmt(r.casa.cota)} + ${fmt(p.alturaGrifo)}) − ${fmt(gfo.hf)} − ${fmt(gfo.hm)} − ${fmt(gfo.hl, 3)} = ${fmt(H)} m.c.a.`),
+        ecu.tipo('Ecuación cuadrática: pérdida del medidor'),
+        ecu.formula(`${i('h')}<sub>medidor</sub> = Δ${i('h')}<sub>máx</sub> · (${i('q')} / ${i('q')}<sub>máx</sub>)²`),
+        ecu.sust(`${i('h')}<sub>medidor</sub> = ${fmt(p.medidorDh, 1)} × (${fmt(r.qGrifo * 3600, 3)} / ${fmt(p.medidorQmax, 1)})² = ${fmt(gfo.hm)} m`),
         ecu.tipo('Ecuación cuadrática: velocidad de salida'),
         ecu.formula(`((1 + ${i('K')}) / 2${i('g')}) · ${i('v')}² − ${i('H')} = 0,  ${i('K')} = ${i('K')}₀ / ${i('a')}²`),
         H > 0
@@ -593,7 +999,7 @@ const PINTORES = {
         r.vGrifo > 0
           ? ecu.sust(`${i('y')}(${i('x')}) = ${fmt(k.a, 4)}${i('x')}² + ${fmt(p.alturaGrifo)};  ${i('y')} = 0 cuando ${i('x')} = ${fmt(r.vGrifo)} × √(2 × ${fmt(p.alturaGrifo)} / 9.81) = ${fmt(r.alcance)} m`)
           : '',
-        ecu.nota(`La presión mínima de ${fmt(p.presionMinima, 1)} m.c.a. es un valor de referencia editable; conviene contrastarlo con el Reglamento Técnico del Sector de Agua Potable (RAS).`),
+        ecu.nota(`Las pérdidas de la acometida dependen del caudal que sale por el grifo, y ese caudal depende de la carga que queda: se resuelven juntas. La presión mínima de ${fmt(p.presionMinima, 1)} m.c.a. se exige en la red, frente a la vivienda; es un valor de referencia editable.`),
       ].join(''),
       leyenda: 'Trayectoria parabólica del chorro que sale horizontalmente del grifo hasta tocar el suelo.',
       grafica(g) {
@@ -679,11 +1085,22 @@ const PINTORES = {
   },
 };
 
+function pintarDiseno(f, datos) {
+  if (f.revision && datos.revision) setHTML(f.revision, revisionHTML(datos.revision));
+  if (datos.red) {
+    setHTML(f.plano, datos.red.plano);
+    setHTML(f.zanja, datos.red.zanja.svg);
+    if (f.leyendaZanja.textContent !== datos.red.zanja.leyenda) f.leyendaZanja.textContent = datos.red.zanja.leyenda;
+    setHTML(f.cantidades, datos.red.cantidades);
+  }
+}
+
 function pintarTab(id) {
   const datos = PINTORES[id]();
   const f = fichas[id];
   setHTML(f.metricas, datos.metricas);
   setHTML(f.ecuacion, datos.ecuacion);
+  pintarDiseno(f, datos);
   if (f.leyenda.textContent !== datos.leyenda) f.leyenda.textContent = datos.leyenda;
   if (!graficas[id] && window.Chart) graficas[id] = crearGrafica(f.canvas, datos.ejes);
   if (graficas[id]) datos.grafica(graficas[id]);
@@ -715,7 +1132,17 @@ function pintarEstados() {
     deficit: [`Tanque vacío: el sector recibe ${fmt(M.m3sAlps(r.Qsal))} de ${fmt(p.Qdemanda)} L/s`, 'alerta'],
     'sin-agua': ['No llega agua al grifo: las pérdidas superan la carga disponible', 'alerta'],
   };
-  const [ta, na] = textos[r.estado];
+  let [ta, na] = textos[r.estado];
+  if (r.casa.cerrada) [ta, na] = [`Ramal ${r.casa.j} cerrado: la vivienda de análisis no recibe agua`, 'alerta'];
+  const bom = document.getElementById('estadoBomba');
+  const tb0 = r.bomba
+    ? `Bomba encendida: ${fmt(p.Qbombeo)} L/s${p.controlBomba === 'automatico' ? ` (se apaga a ${fmt(p.nivelParada)} m)` : ''}`
+    : `Bomba apagada: tanque lleno, arranca a ${fmt(p.nivelArranque)} m`;
+  if (bom) {
+    const sp = bom.querySelector('.texto');
+    if (sp.textContent !== tb0) sp.textContent = tb0;
+    bom.dataset.nivel = r.bomba ? 'ok' : 'aviso';
+  }
   const c = r.canal;
   const uso = (p.Qcrecida / c.Qcap) * 100;
   const [tb, nb] = c.desborde
@@ -726,7 +1153,9 @@ function pintarEstados() {
     if (span.textContent !== t) span.textContent = t;
     el.dataset.nivel = n;
   }
-  const alertas = { vivienda: r.estado !== 'normal', tanque: r.vacio, arroyo: c.desborde };
+  const alertas = { vivienda: r.estado !== 'normal' || r.casa.cerrada, tanque: r.vacio, arroyo: c.desborde,
+    red: r.checks.some((x) => x.nivel === 'alerta' && /Red|Acometida/.test(x.texto)),
+    tuberias: r.checks.some((x) => x.nivel === 'alerta' && /Aducción|Conducción/.test(x.texto)) };
   for (const t of TABS) {
     document.querySelector(`#pestana-${t.id} .alerta-mini`).hidden = !alertas[t.id];
   }
@@ -762,6 +1191,22 @@ function mostrarTab(id) {
   experimento?.activar(id === 'tuberias');
 }
 
+function elegirCasa(id) {
+  p.casaAnalisis = id;
+  cambio();
+}
+
+function eventosPlano() {
+  const el = fichas.red?.plano;
+  if (!el) return;
+  const elegir = (ev) => {
+    const g = ev.target.closest('[data-casa]');
+    if (g) elegirCasa(g.dataset.casa);
+  };
+  el.addEventListener('click', elegir);
+  el.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); elegir(ev); } });
+}
+
 function seleccionDesdeEscena(id) {
   mostrarTab(id);
   // En móvil el panel queda debajo de la vista 3D: se lleva a la pantalla
@@ -782,9 +1227,11 @@ function controlesTiempo() {
   const sel = document.getElementById('selVelocidad');
   sel.addEventListener('change', () => { sim.factor = parseFloat(sel.value); });
   document.getElementById('btnReiniciar').addEventListener('click', () => {
-    Object.assign(p, M.PARAMETROS_INICIALES);
+    Object.assign(p, M.PARAMETROS_INICIALES, S.PARAMETROS_DISENO);
     sim.nivel = NIVEL_INICIAL;
     sim.t = HORA_INICIAL;
+    sim.bomba = true;
+    sim.arranques = 0;
     cambio();
   });
 }
@@ -797,24 +1244,29 @@ function bucle(ahora) {
   ultimo = ahora;
   if (sim.corriendo) {
     const paso = dt * sim.factor;
-    sim.t += paso;
-    sim.nivel = M.avanzarNivel(p, sim.nivel, paso);
+    const st = D.avanzarTanque(p, sim, paso);
+    sim.t = st.t;
+    sim.nivel = st.nivel;
+    sim.bomba = st.bomba;
+    sim.arranques += st.arranques;
     recalcular();
     escena?.actualizar(p, r, sim.nivel);
     if (ahora - ultimoPanel > 250) {
       ultimoPanel = ahora;
       pintarEstados();
       pintarReloj();
-      const dinamicas = ['tanque', 'captacion', 'vivienda', 'tuberias'];
+      const dinamicas = ['tanque', 'captacion', 'vivienda', 'tuberias', 'red'];
       if (dinamicas.includes(tabActiva)) {
         const f = fichas[tabActiva];
         const datos = PINTORES[tabActiva]();
         setHTML(f.metricas, datos.metricas);
         setHTML(f.ecuacion, datos.ecuacion);
+        pintarDiseno(f, datos);
         if (datos.experimento) pintarExtras(tabActiva, { experimento: datos.experimento });
         if (ahora - ultimaGrafica > 1000 && graficas[tabActiva]) {
           ultimaGrafica = ahora;
           datos.grafica(graficas[tabActiva]);
+          if (datos.extra && graficas[`${tabActiva}-extra`]) datos.extra.grafica(graficas[`${tabActiva}-extra`]);
         }
       }
       if (tabActiva === 'tanque') sincronizarControles();
@@ -831,8 +1283,9 @@ function iniciar() {
   crearPanel();
   if (fichas.tuberias.exp) experimento = new ExperimentoReynolds(fichas.tuberias.exp.canvas);
   controlesTiempo();
+  eventosPlano();
   const contenedor = document.getElementById('escena');
-  escena = new Escena(contenedor, { onSeleccion: seleccionDesdeEscena });
+  escena = new Escena(contenedor, { onSeleccion: seleccionDesdeEscena, onCasa: (id) => { elegirCasa(id); mostrarTab('vivienda'); } });
   let ok = false;
   try {
     ok = escena.iniciar();
@@ -850,6 +1303,7 @@ function iniciar() {
   mostrarTab('captacion');
   pintarPanel();
   escena?.actualizar(p, r, sim.nivel);
+  if (location.hash === '#depurar') window.__sim = { escena, p, sim, cambio };
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => pintarTab(tabActiva));
   requestAnimationFrame(bucle);
 }

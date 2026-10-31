@@ -59,13 +59,15 @@ export function crearGrafica(canvas, { xTitulo, yTitulo, formatoX, formatoY }) {
 }
 
 /** Serie dibujada como línea continua. */
-export function serieLinea(etiqueta, datos, color, { punteada = false, ancho = 2 } = {}) {
+export function serieLinea(etiqueta, datos, color, { punteada = false, ancho = 2, relleno = false, colorRelleno = null, escalon = false } = {}) {
   return {
+    fill: relleno,
+    stepped: escalon ? 'before' : false,
     label: etiqueta,
     data: datos,
     showLine: true,
     borderColor: color,
-    backgroundColor: color,
+    backgroundColor: colorRelleno || color,
     borderWidth: ancho,
     borderDash: punteada ? [6, 4] : [],
     pointRadius: 0,

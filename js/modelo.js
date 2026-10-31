@@ -96,6 +96,12 @@ export function factorFriccion(Re, D, rugosidad = RUGOSIDAD_PVC) {
   return 0.25 / (t * t);
 }
 
+/** Hazen-Williams: h_f = 10.67·L·Q^1.852 / (C^1.852·D^4.87) [m] (Q en m³/s; D y L en m). */
+export function perdidaHazen(Q, L, D, C) {
+  if (Q <= 0) return 0;
+  return (10.67 * L * Q ** 1.852) / (C ** 1.852 * D ** 4.87);
+}
+
 /** Pérdida por fricción de Darcy-Weisbach h_f = f·(L/D)·V²/2g [m]. */
 export function perdidaDarcy(Q, L, D, rugosidad = RUGOSIDAD_PVC) {
   if (Q <= 0) return 0;
@@ -507,14 +513,17 @@ export function calcularSistema(p, nivel) {
   const rebose = lleno && Qin > Qsal ? Qin - Qsal : 0;
 
   // Aducción
-  const adu = analisisTuberia(Qin, p.Laduccion, p.Daduccion);
+  const hazen = p.metodoPerdidas === 'hazen';
+  const adu = analisisTuberia(Qin, p.Laduccion, p.Daduccion, p.rugAduccion ?? RUGOSIDAD_PVC);
+  if (hazen && p.CAduccion && adu.regimen !== 'laminar') adu.hfReal = perdidaHazen(Qin, p.Laduccion, p.Daduccion, p.CAduccion);
   const Hb = alturaBombeo(p.cotaRio, p.cotaTanque, nivel, adu.hfReal);
   const Vmes = volumenMensual(Qin, p.horasDia);
   const costo = costoBombeo(Vmes, Hb, p.eficiencia, p.tarifaKWh, p.cargoFijo);
   const potencia = potenciaBomba(Qin, Hb, p.eficiencia);
 
   // Distribución y grifo
-  const dis = analisisTuberia(Qsal, p.Ldistribucion, p.Ddistribucion);
+  const dis = analisisTuberia(Qsal, p.Ldistribucion, p.Ddistribucion, p.rugDistribucion ?? RUGOSIDAD_PVC);
+  if (hazen && p.CDistribucion && dis.regimen !== 'laminar') dis.hfReal = perdidaHazen(Qsal, p.Ldistribucion, p.Ddistribucion, p.CDistribucion);
   const Hcasa = cargaDisponible(p.cotaTanque, nivel, p.cotaCasa + p.alturaGrifo, dis.hfReal);
   const vGrifo = velocidadGrifo(Hcasa, p.apertura, p.K0);
   const qGrifo = vGrifo * areaCircular(p.dBoquilla);
