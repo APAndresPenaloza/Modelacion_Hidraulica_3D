@@ -103,6 +103,66 @@ test('Tanque: el ciclo con consumo igual al QMD', () => {
   cerca(c.horasDia, 24 * c.tLlenado / c.ciclo, 1e-9);
 });
 
+test('Costo mensual: no cambia cuando la bomba se apaga o se prende', () => {
+  const p = base();
+  const C0 = S.calcular(p, { nivel: 4.4, bomba: true, t: 6 * 3600 }).costo.costo;
+  // Mismo costo con la bomba apagada o prendida, a cualquier nivel y a cualquier hora
+  for (const [nivel, bomba, hora] of [[4.75, false, 6], [3.9, false, 14], [3.0, true, 19], [4.5, true, 2]]) {
+    cerca(S.calcular(p, { nivel, bomba, t: hora * 3600 }).costo.costo, C0, 1e-6);
+  }
+  // Horas = 24·QMD/Qb = 24 × 10.85/15 = 17.36 h; V = 0.015 × 17.36 × 3600 × 30 = 28 123.2 m³
+  const r = S.calcular(p, { nivel: 4.4, bomba: true, t: 6 * 3600 });
+  cerca(r.horasDia, 17.36, 1e-9);
+  cerca(r.Vmes, 28123.2, 1e-6);
+  // Altura media con el nivel medio (3 + 4.75)/2 = 3.875 m: H̄ = 38 + 3.875 − 2.5 + h_f
+  cerca(r.nivelMedio, 3.875, 1e-12);
+  cerca(r.Hmedia, 38 + 3.875 - 2.5 + r.hfBombeo, 1e-9);
+  cerca(r.hfBombeo, r.succion.hfReal + r.aduccion.hfReal, 1e-12);
+  // C = m·V + b con m = 950·997.05·9.81·H̄/(0.7·3.6e6)
+  const m = (950 * 997.05 * 9.81 * r.Hmedia) / (0.7 * 3.6e6);
+  cerca(r.costo.costo, m * 28123.2 + 150000, 1e-6);
+  // Con bombeo continuo trabaja 24 h y el tanque se mantiene lleno
+  const c = D.costoMensual({ ...p, controlBomba: 'continuo' }, r.hfBombeo);
+  cerca(c.horasDia, 24, 1e-12);
+  cerca(c.nivelMedio, p.hMax, 1e-12);
+  // Si la bomba no alcanza el QMD, trabaja 24 h y el tanque termina vacío
+  const sin = D.costoMensual({ ...p, Qbombeo: 8 }, r.hfBombeo);
+  assert.equal(sin.alcanza, false);
+  cerca(sin.horasDia, 24, 1e-12);
+  assert.equal(sin.nivelMedio, 0);
+});
+
+test('Energía de ciclos completos = estimación mensual del costo', () => {
+  const p = { ...base(), curvaDemanda: 'constante' };
+  const hf = S.calcular(p, { nivel: 4.4, bomba: true, t: 0 }).hfBombeo;
+  const ci = D.cicloBomba(p);
+  // Tres ciclos desde el arranque, en pasos de 10 min
+  let st = { nivel: p.nivelArranque, bomba: true, t: 0 };
+  let E = 0;
+  let tBomba = 0;
+  let eventos = 0;
+  for (let resto = 3 * ci.ciclo; resto > 1e-6; resto -= 600) {
+    const s = D.avanzarTanque(p, st, Math.min(600, resto));
+    E += D.energiaTramo(p, s.tBomba, s.areaNivel, hf);
+    tBomba += s.tBomba;
+    eventos += s.eventos.length;
+    st = s;
+  }
+  cerca(tBomba, 3 * ci.tLlenado, 1e-3);
+  assert.equal(eventos, 6);                         // tres paradas y tres arranques
+  cerca((E / (3 * ci.ciclo)) * 30 * 86400, D.costoMensual(p, hf).costo.energia, 1e-3);
+});
+
+test('Tanque: los cambios de la bomba se registran con su instante exacto', () => {
+  const p = { ...base(), curvaDemanda: 'constante' };
+  const A = M.areaTanque(p.Dtanque);
+  // De 4.40 m a la parada (4.75 m) con (Qb − QMD)/A: t = 0.35·A/0.00415 = 9 538.4 s
+  const s = D.avanzarTanque(p, { nivel: 4.4, bomba: true, t: 0 }, 4 * 3600);
+  cerca(s.eventos[0].t, (0.35 * A) / 0.00415, 1e-6);
+  assert.equal(s.eventos[0].bomba, false);
+  cerca(s.eventos[0].nivel, 4.75, 1e-9);
+});
+
 test('Golpe de ariete (Joukowsky): ΔH = a·V/g', () => {
   const e = D.especTubo('pvc', 'RDE 21', '6"');
   const a = D.celeridad(e);

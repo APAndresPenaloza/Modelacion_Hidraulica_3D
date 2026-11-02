@@ -249,16 +249,27 @@ export function controlBomba(p, nivel, encendida) {
  * Avanza el tanque dt segundos con el control de la bomba y el consumo horario.
  * Integra por tramos: si el nivel cruza un interruptor dentro del paso, avanza hasta
  * él, cambia el estado de la bomba y sigue con el tiempo que falta.
+ * Además devuelve cada cambio de la bomba con su instante exacto (eventos), el tiempo
+ * con la bomba encendida (tBomba) y el área bajo la recta del nivel en ese tiempo
+ * (areaNivel = ∫h·dt, suma de trapecios), con la que se calcula la energía del tramo.
  */
 export function avanzarTanque(p, estado, dt) {
   let { nivel, bomba, t } = estado;
   const At = M.areaTanque(p.Dtanque);
   let resta = dt;
   let arranques = 0;
+  let tBomba = 0;
+  let areaNivel = 0;
+  const eventos = [];
   let guard = 0;
   while (resta > 1e-6 && guard++ < 400) {
     const sub = Math.min(resta, 300);
+    const previo = bomba;
     bomba = controlBomba(p, nivel, bomba);
+    if (bomba !== previo) {
+      eventos.push({ t, nivel, bomba });
+      if (bomba) arranques++;
+    }
     const Qin = bomba ? M.lpsAm3s(p.Qbombeo) : 0;
     const QsalDem = caudalSalida(p, (t / 3600) % 24);
     const Qsal = nivel <= 1e-6 ? Math.min(QsalDem, Qin) : QsalDem;
@@ -271,19 +282,22 @@ export function avanzarTanque(p, estado, dt) {
       if (bomba && m > 0 && nivel + m * sub >= p.nivelParada) { paso = Math.max(0, (p.nivelParada - nivel) / m); cambia = true; }
       if (!bomba && m < 0 && nivel + m * sub <= p.nivelArranque) { paso = Math.max(0, (p.nivelArranque - nivel) / m); cambia = true; }
     }
+    const nivel0 = nivel;
     nivel = Math.min(p.hMax, Math.max(0, nivel + m * paso));
+    if (bomba) { tBomba += paso; areaNivel += ((nivel0 + nivel) / 2) * paso; }
     t += paso;
     resta -= paso;
     if (cambia) {
       const antes = bomba;
       bomba = !bomba;
       if (!antes && bomba) arranques++;
+      eventos.push({ t, nivel, bomba });
       if (paso === 0) { // evita lazo sin avance
         nivel = Math.min(p.hMax, Math.max(0, nivel + m * 1e-3));
       }
     }
   }
-  return { nivel, bomba, t, arranques };
+  return { nivel, bomba, t, arranques, tBomba, areaNivel, eventos };
 }
 
 /**
@@ -304,6 +318,44 @@ export function cicloBomba(p) {
     fraccionEncendida: Number.isFinite(tLlenado) ? tLlenado / ciclo : 1,
     horasDia: Number.isFinite(tLlenado) ? (24 * tLlenado) / ciclo : 24,
   };
+}
+
+/**
+ * Costo mensual de bombeo con el ciclo completo de la bomba. Es un valor del mes, así
+ * que no depende del instante ni de si la bomba está prendida en ese momento:
+ *   - horas al día: las del ciclo, 24·t_enc/(t_enc + t_apag) (24 h con bombeo continuo);
+ *   - volumen: V = Q_b · horas · 3600 · 30;
+ *   - altura dinámica media: con control por niveles, mientras la bomba trabaja el nivel
+ *     sube en línea recta del arranque a la parada y la altura es lineal en el nivel, así
+ *     que su promedio es la altura con el nivel medio (h_a + h_p)/2. Con bombeo continuo
+ *     el tanque se mantiene lleno (h_máx); si la bomba no alcanza el consumo, termina vacío (0).
+ * hf: pérdidas por fricción de la succión y la aducción con el caudal de la bomba [m].
+ */
+export function costoMensual(p, hf) {
+  const Qb = M.lpsAm3s(p.Qbombeo);
+  const auto = p.controlBomba === 'automatico';
+  const ciclo = cicloBomba(p);
+  const alcanza = Qb > M.lpsAm3s(p.Qdemanda);
+  const horasDia = auto ? ciclo.horasDia : 24;
+  const nivelMedio = !alcanza ? 0 : (auto ? (p.nivelArranque + p.nivelParada) / 2 : p.hMax);
+  const Hmedia = M.alturaBombeo(p.cotaRio, p.cotaTanque, nivelMedio, hf);
+  const Vmes = M.volumenMensual(Qb, horasDia);
+  return {
+    ciclo, alcanza, horasDia, nivelMedio, Hmedia, Vmes,
+    potencia: M.potenciaBomba(Qb, Hmedia, p.eficiencia),
+    costo: M.costoBombeo(Vmes, Hmedia, p.eficiencia, p.tarifaKWh, p.cargoFijo),
+  };
+}
+
+/**
+ * Energía de un tramo de la simulación [kWh]: E = ρ·g·Q_b·∫H·dt/(η·3.6×10⁶), con
+ * H(t) = z_t + h(t) − z_río + h_f, así que ∫H·dt = (z_t − z_río + h_f)·t_enc + ∫h·dt.
+ * tBomba [s] y areaNivel [m·s] los devuelve avanzarTanque().
+ */
+export function energiaTramo(p, tBomba, areaNivel, hf) {
+  if (tBomba <= 0) return 0;
+  const integralH = (p.cotaTanque - p.cotaRio + hf) * tBomba + areaNivel;
+  return (M.RHO * M.G * M.lpsAm3s(p.Qbombeo) * integralH) / (p.eficiencia * 3.6e6);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

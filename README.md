@@ -2,7 +2,9 @@
 
 Aplicación web interactiva que simula el abastecimiento de agua de un sector de Santa Marta (río → bocatoma y desarenador → bombeo → aducción → tanque → conducción → red de distribución → acometida y grifo de una vivienda) y la capacidad de un arroyo canalizado durante una crecida. El río corre casi lleno entre orillas bajas; el agua entra por la rejilla de una bocatoma lateral, deja la arena en un desarenador y pasa al pozo de succión de la bomba. El arroyo corre por un canal trapezoidal de concreto excavado bajo el nivel de la calle, con andenes, barandas, compuerta y pozo de disipación.
 
-La escena muestra el régimen del flujo: en las tuberías las partículas se mueven con el perfil de velocidad (parabólico en laminar, casi plano en turbulento) y un hilo de tinta sigue recto o se mezcla. La pestaña Tuberías incluye una animación del experimento de Reynolds con un tubo de vidrio cuyo diámetro y velocidad se pueden cambiar.
+La escena muestra el régimen del flujo: en las tuberías las partículas se mueven con el perfil de velocidad (parabólico en laminar, casi plano en turbulento) y un hilo de tinta sigue recto o se mezcla. La pestaña Tuberías incluye una animación del experimento de Reynolds con un tubo de vidrio cuyo diámetro y velocidad se pueden cambiar. La pestaña Datos guarda la información de la simulación en un libro de Excel.
+
+El panel tiene siete pestañas: Captación, Tuberías, Tanque, Red, Vivienda, Arroyo y Datos.
 
 Proyecto final de Álgebra y Geometría Analítica, 2026-II. Línea de investigación: Hidráulica de Canales Abiertos y Redes de Acueducto.
 
@@ -17,13 +19,16 @@ js/graficas.js        Gráficas con Chart.js
 js/diseno.js          Diseño: catálogo de tuberías, demanda horaria, control de la bomba, golpe de ariete, red ramificada, zanja y cantidades
 js/sistema.js         Une el modelo y el diseño en un solo cálculo del sistema, con la revisión de criterios
 js/reynolds.js        Animación del experimento de Reynolds (laminar, transición, turbulento)
-js/app.js             Controles, tiempo simulado, métricas, plano de la red y ecuaciones
+js/datos.js           Registro de la simulación, escenarios y armado del libro de Excel
+js/excel.js           Escritor de archivos .xlsx (XML + ZIP con compresión DEFLATE), sin librerías
+js/app.js             Controles, tiempo simulado, métricas, plano de la red, ecuaciones y pestaña Datos
 lib/                  Three.js 0.170 y Chart.js 4.4 (copias locales, licencia MIT)
 tests/modelo.test.js  Pruebas del modelo con valores calculados a mano
-tests/diseno.test.js  Pruebas del diseño (catálogo, demanda, bomba, red, sistema completo)
+tests/diseno.test.js  Pruebas del diseño (catálogo, demanda, bomba, costo mensual, red, sistema completo)
+tests/excel.test.js   Pruebas del archivo de Excel (se descomprime con zlib y se revisa)
 ```
 
-Las librerías van incluidas en `lib/`, así que el simulador no depende de ningún CDN.
+Las librerías van incluidas en `lib/` y el Excel se genera con código propio, así que el simulador no depende de ningún CDN.
 
 ## Objetos matemáticos del simulador
 
@@ -32,7 +37,7 @@ Las librerías van incluidas en `lib/`, así que el simulador no depende de ning
 | Decimales | Cotas, caudales en L/s, áreas, volumen del tanque, presión en m.c.a. y kPa | `redondear`, `areaCircular`, `volumenTanque`, `cargaDisponible` |
 | Ecuación lineal | Pérdida laminar h_f = k·Q (Hagen-Poiseuille) | `perdidaLaminar` |
 | Ecuación lineal | Nivel del tanque h(t) = h₀ + m·t | `nivelTanque`, `tiempoHastaNivel` |
-| Ecuación lineal | Costo de bombeo C(V) = m·V + b | `costoBombeo` |
+| Ecuación lineal | Costo de bombeo C(V) = m·V + b, con la altura dinámica media del ciclo | `costoBombeo` (y `costoMensual` en `diseno.js`) |
 | Ecuación cuadrática | Área del canal trapezoidal con perímetro y talud fijos A(b) = ((z−k)/k²)b² + (P(k−2z)/k²)b + zP²/k², k = 2√(1+z²), y su vértice | `areaCanal`, `seccionOptima` |
 | Ecuación cuadrática | Trayectoria del chorro y(x) = −(g/2v²)x² + h₀ | `trayectoriaChorro`, `alcanceChorro` |
 | Ecuación cuadrática | Velocidad de salida del grifo ((1+K)/2g)v² − H = 0 | `velocidadGrifo` |
@@ -63,6 +68,33 @@ El consumo sigue una curva horaria con promedio igual al QMD y pico igual al QMH
 
 Dos interruptores de nivel controlan la bomba: se apaga al llegar al nivel de parada y vuelve a arrancar cuando el agua baja al nivel de arranque. `avanzarTanque` integra el nivel por tramos rectos y corta el paso justo en cada interruptor, así que el nivel dibuja un diente de sierra. `cicloBomba` da el tiempo encendida y apagada, las horas de bombeo al día y los arranques por hora. En la escena, una luz verde o roja en la bomba y dos flotadores en el tanque muestran el estado.
 
+## Costo mensual de bombeo
+
+El costo es un valor del mes completo, no del instante, así que no cambia cuando la bomba se apaga o se prende (`costoMensual` en `diseno.js`):
+
+- horas de bombeo al día = 24·t_enc/(t_enc + t_apag) = 24·QMD/Q_b, del ciclo de la bomba;
+- volumen mensual V = Q_b · horas · 3600 · 30;
+- altura dinámica media H̄ = z_t + (h_a + h_p)/2 − z_río + h_f: mientras la bomba trabaja, el nivel sube en línea recta del arranque a la parada y la altura es lineal en el nivel, así que su promedio es la altura con el nivel medio;
+- C(V) = m·V + b, con m = tarifa·ρ·g·H̄/(η·3.6×10⁶).
+
+Con bombeo continuo la bomba trabaja 24 h y el tanque se mantiene lleno (altura con h_máx); si la bomba no alcanza el QMD, el tanque termina vacío (nivel 0). En el escenario base: 17.36 h al día, V = 28 123.20 m³, H̄ = 42.62 m, m = 157.14 COP/m³ y C = 4 569 170 COP. Antes se usaba la altura del instante y el costo iba de 4 478 434 COP (tanque en el arranque) a 4 659 907 COP (tanque en la parada). Una prueba simula tres ciclos completos y comprueba que la energía medida, llevada a un mes, es igual a la de la fórmula.
+
+## Pestaña Datos: guardar la simulación en Excel
+
+Mientras corre el reloj se guarda una fila cada 15 minutos de tiempo simulado (se puede cambiar a 5 min, 30 min o 1 h) y cada arranque o parada de la bomba con su instante exacto; la energía se suma tramo por tramo con el área bajo la recta del nivel. «Guardar escenario» copia todos los parámetros y resultados del momento (los escenarios quedan en el navegador aunque se recargue la página). «Descargar Excel (.xlsx)» crea `simulacion-hidrica_AAAA-MM-DD_HH-MM.xlsx` con siete hojas:
+
+| Hoja | Contenido |
+|---|---|
+| Resumen | Fecha, tiempo simulado, tamaño del registro, energía medida y estado del sistema al exportar |
+| Parámetros y resultados | Todos los parámetros y resultados; una columna por escenario guardado y la última con el estado al exportar |
+| Serie de tiempo | Una fila por intervalo: nivel, bomba, consumo, altura, potencia, presiones, energía y costo acumulados, uso del canal |
+| Arranques y paradas | Cada cambio de la bomba con su hora, el nivel y la duración del tramo anterior |
+| Ciclo y costo | El ciclo de la bomba y el costo mensual con fórmulas de Excel: si se cambia un dato de entrada (en azul), Excel recalcula |
+| Revisión del diseño | Los criterios de diseño con su resultado |
+| Cantidades de obra | Tuberías, accesorios, excavación y cama de apoyo de la red |
+
+Los números se guardan con todos sus decimales; el formato de cada celda solo decide cuántos se ven. Los textos largos (material de una tubería, ecuación de fricción, criterios de diseño) se parten en líneas dentro de su celda, y al imprimir las hojas anchas salen en horizontal, ajustadas al ancho de la página. El archivo se arma en el navegador con `js/excel.js` (sin librerías ni conexión a internet).
+
 ## Tuberías por material
 
 Cada tramo (succión, aducción, conducción, principal, ramales y acometida) se elige por material, diámetro nominal y clase de presión. El catálogo (`MATERIALES`, `especTubo`) da diámetro externo, espesor, diámetro interno, presión de trabajo, rugosidad, coeficiente C y módulo de elasticidad.
@@ -84,7 +116,7 @@ En la pestaña Red se eligen el número de ramales, las viviendas por ramal, las
 
 ## Captación y desarenador
 
-El agua del río entra por una rejilla a la bocatoma, cruza el desarenador y rebosa por un vertedero al pozo de succión. Un grano se queda en el desarenador si cae la profundidad h antes de recorrer la longitud L, es decir si su velocidad de caída es mayor que la carga superficial q = Q/(B·L); la profundidad se cancela. Con la ley de Stokes (v_s = K·d², K = g(ρ_s − ρ)/(18μ)) el grano más fino que se queda es d = √(q/K). En el escenario base (12.5 L/s, B = 1 m, L = 6 m) se retienen los granos desde 0.045 mm; al bombear más o acortar el desarenador pasa arena más fina hacia la bomba, y la escena lo muestra con granos de cuatro tamaños.
+El agua del río entra por una rejilla a la bocatoma, cruza el desarenador y rebosa por un vertedero al pozo de succión. Un grano se queda en el desarenador si cae la profundidad h antes de recorrer la longitud L, es decir si su velocidad de caída es mayor que la carga superficial q = Q/(B·L); la profundidad se cancela. Con la ley de Stokes (v_s = K·d², K = g(ρ_s − ρ)/(18μ)) el grano más fino que se queda es d = √(q/K). El desarenador se calcula con el caudal de la bomba mientras trabaja. En el escenario base (15 L/s, B = 1 m, L = 6 m) se retienen los granos desde 0.050 mm; al bombear más o acortar el desarenador pasa arena más fina hacia la bomba, y la escena lo muestra con granos de cuatro tamaños.
 
 ## Sección del arroyo
 
@@ -104,11 +136,14 @@ Los módulos de JavaScript no funcionan abriendo `index.html` con doble clic. Ha
 python -m http.server 8000
 ```
 
-y abrir `http://localhost:8000`. Para correr las pruebas del modelo (requiere Node.js 18 o superior):
+y abrir `http://localhost:8000`. Para correr las pruebas (requiere Node.js 18 o superior):
 
 ```
 npm test
 ```
+
+Son 43 pruebas: 17 del diseño, 5 del archivo de Excel y 21 del modelo base.
+
 
 ## Valores de referencia
 

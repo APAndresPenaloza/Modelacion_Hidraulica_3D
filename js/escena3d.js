@@ -1646,7 +1646,7 @@ export class Escena {
     const V = (x, y, z) => new THREE.Vector3(x, y, z);
     const nivelCasa = r.estado === 'normal' ? 'ok' : (r.estado === 'baja-presion' ? 'aviso' : 'alerta');
     this.etiqueta('rio', `Cota ${fmt(p.cotaRio)} m`, 'ok', V(X_RIO - 1, 3.2, 14));
-    this.etiqueta('bomba', r.bomba ? `Encendida: ${fmt(p.Qbombeo)} L/s, H = ${fmt(r.alturaBombeo)} m` : `Apagada: tanque lleno (arranca a ${fmt(p.nivelArranque)} m)`, r.bomba ? 'ok' : 'aviso', V(X_BOMBA, alturaTerreno(X_BOMBA, 0) + 5.6, 0));
+    this.etiqueta('bomba', r.bomba ? `Encendida: ${fmt(p.Qbombeo)} L/s, H = ${fmt(r.alturaBombeo)} m` : `Apagada: arranca a ${fmt(p.nivelArranque)} m`, r.bomba ? 'ok' : 'aviso', V(X_BOMBA, alturaTerreno(X_BOMBA, 0) + 5.6, 0));
     const textoBocatoma = r.Qin > 0 ? `Retiene granos ≥ ${fmt(des.dMin * 1000, 3)} mm` : 'Sin caudal';
     this.etiqueta('bocatoma', textoBocatoma, 'ok', V(-34, 8, -19));
     this.etiqueta('aduccion', r.bomba ? `V = ${fmt(r.aduccion.V)} m/s · ${r.aduccion.regimen}` : 'Sin flujo: bomba apagada', r.bomba ? 'ok' : 'aviso', V(-16, alturaTerreno(-16, 0) + 2.8, 0));

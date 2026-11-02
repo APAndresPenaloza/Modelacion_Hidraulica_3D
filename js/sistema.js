@@ -112,12 +112,14 @@ export function calcular(p, estado) {
   // Succión y aducción (con la bomba encendida)
   const succion = D.tramo(Qb, p.Lsuccion, e.Succion, met);
   const aduccion = D.tramo(Qb, p.Laduccion, e.Aduccion, met);
-  const Hb = M.alturaBombeo(p.cotaRio, p.cotaTanque, nivel, aduccion.hfReal + succion.hfReal);
-  const ciclo = D.cicloBomba(p);
-  const horasDia = p.controlBomba === 'automatico' ? ciclo.horasDia : 24;
-  const Vmes = M.volumenMensual(Qb, horasDia);
-  const costo = M.costoBombeo(Vmes, Hb, p.eficiencia, p.tarifaKWh, p.cargoFijo);
+  // Altura dinámica en este instante (con el nivel actual del tanque)
+  const hfBombeo = aduccion.hfReal + succion.hfReal;
+  const Hb = M.alturaBombeo(p.cotaRio, p.cotaTanque, nivel, hfBombeo);
   const potencia = M.potenciaBomba(Qb, Hb, p.eficiencia);
+  // Costo mensual: con el ciclo completo de la bomba y la altura dinámica media, no con
+  // el nivel de este instante (si no, bajaría cuando la bomba se apaga y subiría al prenderse)
+  const mes = D.costoMensual(p, hfBombeo);
+  const { ciclo, horasDia, Vmes, costo } = mes;
   const golpe = D.golpeAriete(aduccion.V, e.Aduccion);
 
   // Conducción (tanque → entrada del barrio) con el caudal actual
@@ -186,6 +188,7 @@ export function calcular(p, estado) {
     Qin, Qsal, Qent, rebose, vacio, lleno, At,
     bomba, hora, factor, QsalDem,
     succion, aduccion, alturaBombeo: Hb, potencia, Vmes, costo, horasDia, ciclo, golpe,
+    hfBombeo, Hmedia: mes.Hmedia, nivelMedio: mes.nivelMedio, potenciaMedia: mes.potencia, alcanza: mes.alcanza,
     distribucion: conduccion, conduccion, Hentrada, Hestatica,
     red, redDiseno, casa, grifo, Hnodo,
     Hcasa, presionCasa: M.mcaAkPa(Math.max(0, Hcasa)), vGrifo, qGrifo,

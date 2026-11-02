@@ -1,6 +1,6 @@
 /**
  * app.js — Controlador del simulador: deslizadores, tiempo simulado,
- * métricas, ecuaciones con sustitución numérica y gráficas.
+ * métricas, ecuaciones con sustitución numérica, gráficas y registro de datos.
  */
 import * as M from './modelo.js';
 import * as D from './diseno.js';
@@ -8,6 +8,7 @@ import * as S from './sistema.js';
 import { Escena } from './escena3d.js';
 import { crearGrafica, actualizarGrafica, serieLinea, seriePuntos, paleta } from './graficas.js';
 import { ExperimentoReynolds } from './reynolds.js';
+import { Registro, INTERVALOS, relojSimulado, crearLibro, nombreArchivo, descargarArchivo } from './datos.js';
 
 // ── Estado ────────────────────────────────────────────────────────────────
 const NIVEL_INICIAL = 4.4;
@@ -16,6 +17,9 @@ const p = { ...M.PARAMETROS_INICIALES, ...S.PARAMETROS_DISENO };
 const sim = { nivel: NIVEL_INICIAL, t: HORA_INICIAL, bomba: true, arranques: 0, corriendo: true, factor: 600 };
 let r = S.calcular(p, sim);
 let tabActiva = 'captacion';
+// Registro de la simulación (serie de tiempo, arranques y paradas, escenarios) para el Excel
+const registro = new Registro();
+registro.reiniciar(HORA_INICIAL);
 
 // ── Formato numérico (punto decimal, espacio fino para miles) ────────────
 function fmt(x, d = 2) {
@@ -53,7 +57,15 @@ const TABS = [
   { id: 'red', nombre: 'Red', red: true, intro: 'La red de distribución reparte el agua en el barrio: una tubería principal, ramales que salen de ella con su válvula de compuerta, y en cada vivienda una acometida con abrazadera de toma, tubería de servicio, llave de paso y medidor. La conducción abastece todo el sector (QMD del tanque); aquí se diseña un barrio de ese sector. Diseña la red con los controles, mira las presiones en el plano y toca una vivienda para analizarla.' },
   { id: 'vivienda', nombre: 'Vivienda', intro: 'La presión en la casa es la altura del agua en el tanque menos lo que se pierde en la conducción, en la red y en la acometida (tubería de servicio, medidor y llave de paso). Con lo que queda sale el chorro del grifo.' },
   { id: 'arroyo', nombre: 'Arroyo', intro: 'Con los aguaceros los arroyos de la ciudad crecen de golpe. El canal trapezoidal, excavado por debajo de la calle, tiene que conducir la crecida sin desbordarse.' },
+  { id: 'datos', nombre: 'Datos', datos: true, intro: 'Guarda la información de la simulación en un libro de Excel: los parámetros y resultados, la serie de tiempo que se registra mientras corre el reloj, los arranques y paradas de la bomba, la revisión del diseño, las cantidades de obra y los escenarios que guardes para compararlos.' },
 ];
+
+const ESTADOS_SERVICIO = {
+  normal: 'Servicio normal',
+  'baja-presion': 'Presión por debajo de la referencia',
+  deficit: 'Desabastecimiento: tanque vacío',
+  'sin-agua': 'No llega agua',
+};
 
 const MATERIALES = [
   { n: 0.013, nombre: 'Concreto liso (n = 0.013)' },
@@ -244,6 +256,10 @@ function crearPanel() {
     f.id = `ficha-${t.id}`;
     f.setAttribute('role', 'tabpanel');
     f.setAttribute('aria-labelledby', b.id);
+    if (t.datos) {
+      crearFichaDatos(t, f);
+      continue;
+    }
     f.innerHTML = `
       <p class="intro">${t.intro}</p>
       ${t.red ? `<figure class="plano"><div class="svg-plano" role="img" aria-label="Plano de la red de distribución"></div><figcaption>Plano esquemático (sin escala). El color de cada vivienda es su presión en la hora pico con el tanque en el nivel de arranque: verde cumple, ocre está cerca del mínimo y rojo no cumple. Toca una vivienda para analizarla.</figcaption></figure>` : ''}
@@ -465,6 +481,10 @@ function aplicarRestricciones() {
 function recalcular() {
   aplicarRestricciones();
   r = S.calcular(p, sim);
+  if (r.bomba !== sim.bomba) {
+    registro.agregarEvento(sim.t, sim.nivel, r.bomba, 'cambio del nivel, de los interruptores o del modo en el panel');
+    if (r.bomba) sim.arranques += 1;
+  }
   sim.bomba = r.bomba;
 }
 
@@ -483,9 +503,22 @@ const ecu = {
 };
 const i = (v) => `<i>${v}</i>`;
 
+/**
+ * Filas de resultados: [etiqueta, valor, unidad, nivel, decimales]. El valor puede ser
+ * un texto ya formateado o un número (se formatea aquí con sus decimales y así pasa
+ * completo al Excel). Mientras se arma una instantánea, las filas se guardan en `captura`.
+ */
+let captura = null;
+function textoValor(valor, unidad, dec = 2) {
+  if (typeof valor !== 'number') return valor;
+  const txt = fmt(valor, dec);
+  return unidad === 'COP' && Number.isFinite(valor) ? `$\u00a0${txt}` : txt;
+}
+
 function metricas(filas) {
-  return filas.map(([dt, valor, unidad = '', nivel = '']) =>
-    `<dt>${dt}</dt><dd${nivel ? ` data-nivel="${nivel}"` : ''}>${valor}${unidad ? `<small>${unidad}</small>` : ''}</dd>`).join('');
+  if (captura) captura.push(filas);
+  return filas.map(([dt, valor, unidad = '', nivel = '', dec = 2]) =>
+    `<dt>${dt}</dt><dd${nivel ? ` data-nivel="${nivel}"` : ''}>${textoValor(valor, unidad, dec)}${unidad ? `<small>${unidad}</small>` : ''}</dd>`).join('');
 }
 
 function setHTML(el, html) {
@@ -642,20 +675,23 @@ const PINTORES = {
     const d = r.desarenador;
     const dmm = d.dMin * 1000;
     const hayFlujo = p.Qbombeo > 0;
+    const auto = p.controlBomba === 'automatico';
+    const Hm = i('H̄');
     return {
       metricas: metricas([
         ['<b>Bombeo y energía</b>', '', ''],
-        ['Estado de la bomba', r.bomba ? 'Encendida' : `Apagada: tanque en el nivel de parada (arranca a ${fmt(p.nivelArranque)} m)`, '', r.bomba ? 'ok' : 'aviso'],
-        ['Altura dinámica de bombeo', fmt(r.alturaBombeo), 'm'],
+        ['Estado de la bomba', r.bomba ? 'Encendida' : `Apagada (arranca a ${fmt(p.nivelArranque)} m)`, '', r.bomba ? 'ok' : 'aviso'],
+        ['Altura dinámica ahora', r.bomba ? r.alturaBombeo : 'sin bombeo', r.bomba ? 'm' : ''],
         ['Desnivel río → superficie del tanque', fmt(desnivel), 'm'],
         ['Pérdida en la succión', fmt(r.succion.hfReal, 3), 'm'],
         ['Velocidad en la succión', fmt(r.succion.V), 'm/s', r.succion.V <= p.VmaxSuccion ? 'ok' : 'aviso'],
         ['Pérdida por fricción en la aducción', fmt(r.aduccion.hfReal), 'm'],
-        ['Horas de bombeo al día', `${fmt(r.horasDia, 1)}${p.controlBomba === 'automatico' ? ' (las fija el control por niveles)' : ''}`, 'h'],
-        ['Potencia de la bomba', fmt(r.potencia / 1000), 'kW'],
-        ['Volumen bombeado al mes', fmt(r.Vmes), 'm³'],
-        ['Energía consumida al mes', fmt(c.energia), 'kWh'],
-        ['Costo mensual de bombeo', `$\u00a0${fmt(c.costo, 0)}`, 'COP'],
+        ['Altura dinámica media del ciclo', r.Hmedia, 'm'],
+        ['Horas de bombeo al día', `${fmt(r.horasDia, 1)}${auto ? ' (las fija el control por niveles)' : ''}`, 'h'],
+        ['Potencia de la bomba al trabajar', r.potenciaMedia / 1000, 'kW'],
+        ['Volumen bombeado al mes', r.Vmes, 'm³'],
+        ['Energía consumida al mes', c.energia, 'kWh'],
+        ['Costo mensual de bombeo', c.costo, 'COP', '', 0],
         ['<b>Desarenador</b>', '', ''],
         ['Velocidad horizontal V<sub>h</sub> = Q/(B·h)', fmt(d.Vh, 4), 'm/s'],
         ['Tiempo que tarda el agua en cruzarlo', fmtTiempo(d.t), ''],
@@ -666,18 +702,24 @@ const PINTORES = {
       ]),
       ecuacion: [
         ecu.tipo('Decimales: volumen mensual'),
-        ecu.formula(`${i('V')} = ${i('Q')} · horas · 3600 · 30`),
-        ecu.sust(`${i('V')} = ${fmt(lps(p.Qbombeo), 5)} × ${fmt(r.horasDia, 1)} × 3600 × 30 = ${fmt(r.Vmes)} m³`),
+        ecu.formula(`${i('V')} = ${i('Q')}<sub>b</sub> · horas · 3600 · 30`),
+        ecu.sust(`${i('V')} = ${fmt(lps(p.Qbombeo), 5)} × ${fmt(r.horasDia, 2)} × 3600 × 30 = ${fmt(r.Vmes)} m³`),
+        ecu.tipo('Decimales: altura dinámica media del ciclo'),
+        ecu.formula(`${Hm} = (${i('z')}<sub>t</sub> + ${i('h')}<sub>medio</sub> − ${i('z')}<sub>río</sub>) + ${i('h')}<sub>f</sub>,  ${i('h')}<sub>medio</sub> = (${i('h')}<sub>a</sub> + ${i('h')}<sub>p</sub>)/2`),
+        ecu.sust(`${Hm} = (${fmt(p.cotaTanque)} + ${fmt(r.nivelMedio, 3)} − ${fmt(p.cotaRio)}) + ${fmt(r.hfBombeo, 3)} = ${fmt(r.Hmedia)} m`),
         ecu.tipo('Ecuación lineal: costo de bombeo'),
         ecu.formula(`${i('C')}(${i('V')}) = ${i('m')} · ${i('V')} + ${i('b')}`),
-        ecu.formula(`${i('m')} = tarifa · ρ${i('g')}${i('H')} / (η · 3.6×10⁶)`),
-        ecu.sust(`${i('m')} = ${fmt(p.tarifaKWh, 0)} × 997.05 × 9.81 × ${fmt(r.alturaBombeo)} / (${fmt(p.eficiencia)} × 3 600 000) = ${fmt(c.m)} COP/m³`),
-        ecu.sust(`${i('C')}(${fmt(r.Vmes)}) = ${fmt(c.m)} × ${fmt(r.Vmes)} + ${fmt(c.b, 0)} = $\u00a0${fmt(c.costo, 0)}`),
+        ecu.formula(`${i('m')} = tarifa · ρ${i('g')}${Hm} / (η · 3.6×10⁶)`),
+        ecu.sust(`${i('m')} = ${fmt(p.tarifaKWh, 0)} × 997.05 × 9.81 × ${fmt(r.Hmedia)} / (${fmt(p.eficiencia)} × 3 600 000) = ${fmt(c.m)} COP/m³`),
+        ecu.sust(`${i('C')}(${fmt(r.Vmes)}) = ${fmt(c.m)} × ${fmt(r.Vmes)} + ${fmt(c.b, 0)} = $ ${fmt(c.costo, 0)}`),
         ecu.nota('La pendiente es lo que cuesta subir un metro cúbico hasta el tanque; el intercepto es el cargo fijo que se paga aunque la bomba no funcione. Se convierte el volumen a energía antes de aplicar la tarifa, porque la tarifa está en COP por kWh.'),
+        ecu.nota(auto
+          ? 'El costo es mensual: se calcula con el ciclo completo de la bomba (las horas que trabaja al día y la altura media entre el arranque y la parada), así que no cambia en el momento en que la bomba se apaga o se prende; solo cambia si cambian los parámetros. Mientras bombea, el nivel sube en línea recta de h<sub>a</sub> a h<sub>p</sub>, y como la altura dinámica es lineal en el nivel, su promedio es la altura con el nivel medio.'
+          : 'Con bombeo continuo la bomba trabaja las 24 horas y el tanque se mantiene lleno (el sobrante sale por el rebose), así que la altura media es la del tanque lleno; si la bomba no alcanza el consumo, el tanque termina vacío.'),
         ecu.tipo('Decimales: velocidad y carga superficial en el desarenador'),
         ecu.formula(`${i('V')}<sub>h</sub> = ${i('Q')} / (${i('B')} · ${i('h')}),  ${i('t')} = ${i('L')} / ${i('V')}<sub>h</sub>,  ${i('q')} = ${i('Q')} / (${i('B')} · ${i('L')})`),
-        ecu.sust(`${i('V')}<sub>h</sub> = ${fmt(r.Qin, 5)} / (${fmt(p.desAncho)} × ${fmt(p.desProfundidad)}) = ${fmt(d.Vh, 4)} m/s;  ${i('t')} = ${fmt(p.desLongitud)} / ${fmt(d.Vh, 4)} = ${fmt(d.t, 0)} s`),
-        ecu.sust(`${i('q')} = ${fmt(r.Qin, 5)} / (${fmt(p.desAncho)} × ${fmt(p.desLongitud)}) = ${fmt(d.q, 5)} m/s`),
+        ecu.sust(`${i('V')}<sub>h</sub> = ${fmt(lps(p.Qbombeo), 5)} / (${fmt(p.desAncho)} × ${fmt(p.desProfundidad)}) = ${fmt(d.Vh, 4)} m/s;  ${i('t')} = ${fmt(p.desLongitud)} / ${fmt(d.Vh, 4)} = ${fmt(d.t, 0)} s`),
+        ecu.sust(`${i('q')} = ${fmt(lps(p.Qbombeo), 5)} / (${fmt(p.desAncho)} × ${fmt(p.desLongitud)}) = ${fmt(d.q, 5)} m/s`),
         ecu.tipo('Ecuación cuadrática: ley de Stokes'),
         ecu.formula(`${i('v')}<sub>s</sub> = ${i('K')} · ${i('d')}²,  ${i('K')} = ${i('g')}(ρ<sub>s</sub> − ρ) / (18μ)`),
         ecu.sust(`${i('K')} = 9.81 × (2650 − 997.05) / (18 × 0.00089) = ${fmt(d.K, 0)} 1/(m·s)`),
@@ -1096,6 +1138,7 @@ function pintarDiseno(f, datos) {
 }
 
 function pintarTab(id) {
+  if (id === 'datos') { pintarDatos(true); return; }
   const datos = PINTORES[id]();
   const f = fichas[id];
   setHTML(f.metricas, datos.metricas);
@@ -1123,6 +1166,347 @@ function pintarExtras(id, datos) {
   }
 }
 
+// ── Pestaña Datos: registro, escenarios y exportación a Excel ───────────────
+/** Escapa texto escrito por el usuario antes de ponerlo en el HTML. */
+const escaparHTML = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+/** Texto plano de una etiqueta con HTML: V<sub>h</sub> → V_h. */
+const textoPlano = (s) => String(s)
+  .replace(/<sub>(.*?)<\/sub>/g, '_$1')
+  .replace(/<sup>(.*?)<\/sup>/g, '^$1')
+  .replace(/<[^>]+>/g, '')
+  .replace(/[\u00a0\u2009\u202f]/g, ' ')
+  .trim();
+
+/** Número de un texto formateado por fmt (espacio para miles, − y $): '4 569 170' → 4569170. */
+function numeroDeTexto(texto) {
+  const t = textoPlano(texto);
+  const m = t.match(/^\$?\s?([−-])?(\d{1,3}(?: \d{3})+|\d+)(\.\d+)?$/);
+  if (!m) return null;
+  return { v: parseFloat(`${m[1] ? '-' : ''}${m[2].replace(/ /g, '')}${m[3] ?? ''}`), dec: m[3] ? m[3].length - 1 : 0 };
+}
+
+function crearFichaDatos(t, f) {
+  f.innerHTML = `
+    <p class="intro">${t.intro}</p>
+    <div class="acciones exportar">
+      <button type="button" class="boton primario" data-accion="excel">Descargar Excel (.xlsx)</button>
+    </div>
+    <p class="nota-datos" data-rol="estado-excel" aria-live="polite">El libro trae siete hojas: resumen, parámetros y resultados, serie de tiempo, arranques y paradas, ciclo y costo con fórmulas, revisión del diseño y cantidades de obra.</p>
+    <h3>Registro de la simulación</h3>
+    <div class="control">
+      <label for="c-intervalo">Registrar una fila cada</label>
+      <select id="c-intervalo">${INTERVALOS.map((x) => `<option value="${x.valor}">${x.nombre} de tiempo simulado</option>`).join('')}</select>
+    </div>
+    <dl class="metricas"></dl>
+    <div class="acciones"><button type="button" class="boton" data-accion="nuevo">Empezar un registro nuevo</button></div>
+    <h3>Escenarios para comparar</h3>
+    <p class="nota-datos">Un escenario guarda todos los parámetros y resultados de este momento. En el Excel cada escenario queda en una columna, al lado del estado al exportar.</p>
+    <form class="guardar-escenario">
+      <label class="sr" for="c-nombre-escenario">Nombre del escenario</label>
+      <input type="text" id="c-nombre-escenario" maxlength="40" autocomplete="off" placeholder="Escenario 1">
+      <button type="submit" class="boton">Guardar escenario</button>
+    </form>
+    <ul class="escenarios"></ul>
+    <figure class="grafica"><div class="lienzo"><canvas aria-label="Gráfica del nivel registrado"></canvas></div><figcaption></figcaption></figure>
+    <h3>Últimos registros</h3>
+    <div class="tabla-registro"></div>`;
+  elFichas.appendChild(f);
+  const d = {
+    raiz: f,
+    metricas: f.querySelector('.metricas'),
+    canvas: f.querySelector('canvas'),
+    leyenda: f.querySelector('figcaption'),
+    intervalo: f.querySelector('#c-intervalo'),
+    estadoExcel: f.querySelector('[data-rol="estado-excel"]'),
+    form: f.querySelector('form'),
+    nombre: f.querySelector('#c-nombre-escenario'),
+    lista: f.querySelector('.escenarios'),
+    tabla: f.querySelector('.tabla-registro'),
+  };
+  fichas[t.id] = d;
+  d.intervalo.value = String(registro.intervalo);
+  d.intervalo.addEventListener('change', () => {
+    registro.cambiarIntervalo(parseFloat(d.intervalo.value), sim.t);
+    pintarDatos(true);
+  });
+  f.querySelector('[data-accion="excel"]').addEventListener('click', (e) => exportarExcel(e.currentTarget));
+  f.querySelector('[data-accion="nuevo"]').addEventListener('click', () => {
+    registro.reiniciar(sim.t);
+    tomarMuestra();
+    pintarDatos(true);
+  });
+  d.form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    recalcular();
+    const nombre = d.nombre.value.trim() || `Escenario ${registro.escenarios.length + 1}`;
+    registro.guardarEscenario(instantanea(nombre));
+    d.nombre.value = '';
+    d.estadoExcel.textContent = `Se guardó «${nombre}». Aparecerá como una columna en la hoja Parámetros y resultados.`;
+    pintarDatos(true);
+  });
+  d.lista.addEventListener('click', (e) => {
+    const boton = e.target.closest('button[data-indice]');
+    if (!boton) return;
+    registro.quitarEscenario(Number(boton.dataset.indice));
+    pintarDatos(true);
+  });
+}
+
+/** Puntos del registro y de los cambios de la bomba en orden de tiempo. */
+function lineaRegistrada() {
+  const filas = registro.filas;
+  const fin = filas.length ? filas[filas.length - 1].t : registro.inicio;
+  return [
+    ...filas.map((x) => ({ t: x.t, nivel: x.nivel, bomba: x.bomba })),
+    // En un cambio, el estado anterior vale hasta ese instante (la franja es escalonada)
+    ...registro.eventos.filter((e) => e.t >= registro.inicio && e.t <= fin).map((e) => ({ t: e.t, nivel: e.nivel, bomba: !e.bomba })),
+  ].sort((a, b) => a.t - b.t);
+}
+
+function pintarDatos(conGrafica = false) {
+  const f = fichas.datos;
+  if (!f) return;
+  const ultima = registro.filas[registro.filas.length - 1];
+  setHTML(f.metricas, metricas([
+    ['Filas registradas', registro.filas.length, '', '', 0],
+    ['Desde', relojSimulado(registro.inicio).texto, ''],
+    ['Hasta', ultima ? relojSimulado(ultima.t).texto : '—', ''],
+    ['Arranques y paradas de la bomba', registro.eventos.length, '', '', 0],
+    ['Horas con la bomba encendida', registro.segundosBomba / 3600, 'h'],
+    ['Energía consumida en el registro', registro.energia, 'kWh'],
+    ['Costo de esa energía (sin cargo fijo)', registro.energia * p.tarifaKWh, 'COP', '', 0],
+  ]));
+  setHTML(f.lista, registro.escenarios.length
+    ? registro.escenarios.map((e, k) => `<li><span class="nombre">${escaparHTML(e.nombre)}</span>`
+      + `<span class="detalle">${escaparHTML(e.momento)}${e.detalle ? ` · ${escaparHTML(e.detalle)}` : ''}</span>`
+      + `<button type="button" class="quitar" data-indice="${k}" aria-label="Quitar ${escaparHTML(e.nombre)}" title="Quitar">×</button></li>`).join('')
+    : '<li class="vacia">Todavía no hay escenarios guardados.</li>');
+  const ultimas = registro.filas.slice(-6).reverse();
+  setHTML(f.tabla, ultimas.length
+    ? `<table><thead><tr><th>Momento</th><th>Nivel (m)</th><th>Bomba</th><th>Grifo (m.c.a.)</th></tr></thead><tbody>${ultimas.map((x) => `<tr><td>${relojSimulado(x.t).texto}</td><td>${fmt(x.nivel)}</td><td>${x.bomba ? 'Encendida' : 'Apagada'}</td><td>${fmt(x.Hcasa)}</td></tr>`).join('')}</tbody></table>`
+    : '<p class="nota-datos">Aún no hay registros: deja correr el reloj de la simulación.</p>');
+  f.nombre.placeholder = `Escenario ${registro.escenarios.length + 1}`;
+  if (String(registro.intervalo) !== f.intervalo.value) f.intervalo.value = String(registro.intervalo);
+  const leyenda = 'Nivel del tanque registrado desde el inicio del registro; la franja inferior indica cuándo estuvo encendida la bomba.';
+  if (f.leyenda.textContent !== leyenda) f.leyenda.textContent = leyenda;
+  if (!conGrafica) return;
+  if (!graficas.datos && window.Chart) {
+    graficas.datos = crearGrafica(f.canvas, { xTitulo: 'Horas desde el inicio del registro', yTitulo: 'Nivel (m)', formatoX: (v) => fmt(v, 1), formatoY: (v) => fmt(v, 1) });
+  }
+  if (!graficas.datos) return;
+  const c = paleta();
+  const t0 = registro.inicio;
+  const puntos = lineaRegistrada();
+  actualizarGrafica(graficas.datos, [
+    serieLinea('Nivel registrado', puntos.map((x) => ({ x: (x.t - t0) / 3600, y: x.nivel })), c.agua),
+    serieLinea('Bomba encendida', puntos.map((x) => ({ x: (x.t - t0) / 3600, y: x.bomba ? 0.25 : 0 })), c.ok, { ancho: 1.5, escalon: true, relleno: 'origin', colorRelleno: `${c.ok}55` }),
+  ], { x: { min: 0, max: techoRedondo(Math.max(1, registro.horasRegistradas)) }, y: { min: 0, max: Math.ceil(p.hMax + 0.5) } });
+}
+
+/** Fila de la serie de tiempo con el estado actual de la simulación. */
+function filaSerie() {
+  return {
+    t: sim.t,
+    nivel: sim.nivel,
+    volumen: r.volumen,
+    llenado: (sim.nivel / p.hMax) * 100,
+    bomba: sim.bomba,
+    Qin: M.m3sAlps(r.Qin),
+    factor: r.factor,
+    Qsal: M.m3sAlps(r.Qsal),
+    Hb: r.alturaBombeo,
+    potencia: sim.bomba ? r.potencia / 1000 : 0,
+    presionRed: r.red.presionMin,
+    casa: r.casa.id,
+    Hcasa: r.Hcasa,
+    estado: r.casa.cerrada ? `Ramal ${r.casa.j} cerrado` : ESTADOS_SERVICIO[r.estado],
+    horasBomba: registro.segundosBomba / 3600,
+    energia: registro.energia,
+    costoEnergia: registro.energia * p.tarifaKWh,
+    usoCanal: (p.Qcrecida / r.canal.Qcap) * 100,
+  };
+}
+
+function tomarMuestra() {
+  recalcular();
+  registro.agregarFila(filaSerie());
+}
+
+/** Parámetros fijos del modelo que no tienen control en el panel. */
+const CONSTANTES = [
+  ['cotaRio', 'Cota del río', 'm.s.n.m.', 2, (q) => q.cotaRio],
+  ['cotaTanque', 'Cota del fondo del tanque', 'm.s.n.m.', 2, (q) => q.cotaTanque],
+  ['cotaCasa', 'Cota de la entrada del barrio', 'm.s.n.m.', 2, (q) => q.cotaCasa],
+  ['K0', 'Coeficiente de pérdida de la llave abierta K₀', '', 1, (q) => q.K0],
+  ['dBoquilla', 'Diámetro de la boquilla del grifo', 'mm', 1, (q) => q.dBoquilla * 1000],
+  ['medidorQmax', 'Caudal máximo del medidor', 'm³/h', 1, (q) => q.medidorQmax],
+  ['Kllave', 'Coeficiente de la llave de paso', '', 2, (q) => q.Kllave],
+  ['VmaxSuccion', 'Velocidad máxima en la succión', 'm/s', 2, (q) => q.VmaxSuccion],
+  ['arranquesMax', 'Arranques por hora admisibles', '1/h', 0, (q) => q.arranquesMax],
+  ['rho', 'Densidad del agua ρ (25 °C)', 'kg/m³', 2, () => M.RHO],
+  ['mu', 'Viscosidad del agua μ (25 °C)', 'Pa·s', 5, () => M.MU],
+  ['g', 'Gravedad g', 'm/s²', 2, () => M.G],
+];
+
+/** Agrega a la instantánea las filas de una pestaña; las filas <b>…</b> abren un grupo. */
+function agregarResultados(salida, nombreTab, filasTab, grupoFijo = null) {
+  let grupo = grupoFijo ?? nombreTab;
+  for (const [dt, valor, unidad = '', , dec = 2] of filasTab) {
+    const etiqueta = textoPlano(dt);
+    if (valor === '' && /^<b>/.test(dt)) {
+      if (!grupoFijo) grupo = `${nombreTab} · ${etiqueta}`;
+      continue;
+    }
+    let v = valor;
+    let d = dec;
+    if (typeof valor !== 'number') {
+      const n = numeroDeTexto(valor);
+      if (n) ({ v, dec: d } = n);
+      else v = textoPlano(valor);
+    }
+    salida.push({ clave: `r|${grupo}|${etiqueta}`, bloque: 'Resultados', grupo, etiqueta, unidad: textoPlano(unidad), valor: v, dec: d });
+  }
+}
+
+/** Todos los parámetros y resultados de este momento (un escenario o el estado al exportar). */
+function instantanea(nombre) {
+  const filas = [];
+  const vistos = new Set();
+  let grupo = '';
+  const agregar = (clave, tab, g, etiqueta, unidad, valor, dec) => {
+    filas.push({ clave: `p|${clave}`, bloque: 'Parámetros', grupo: `${tab} · ${g}`, etiqueta, unidad, valor, dec });
+  };
+  for (const c of CONTROLES) {
+    if (c.grupo) { grupo = c.grupo; continue; }
+    if (c.accion) continue;
+    const id = c.clave ?? c.tubo ?? c.id;
+    if (vistos.has(id)) continue;
+    vistos.add(id);
+    const tab = TABS.find((x) => x.id === c.tab).nombre;
+    const g = c.contenedor === 'experimento' ? 'Experimento de Reynolds' : grupo;
+    if (c.tipo === 'tubo') {
+      const e = r.especs[c.tubo];
+      agregar(`${id}-material`, tab, g, `${c.etiqueta}: material`, '', D.MATERIALES[p[`mat${c.tubo}`]].nombre);
+      agregar(`${id}-dn`, tab, g, `${c.etiqueta}: diámetro nominal`, '', e.dn);
+      agregar(`${id}-clase`, tab, g, `${c.etiqueta}: clase de presión`, '', e.clase);
+      agregar(`${id}-di`, tab, g, `${c.etiqueta}: diámetro interno`, 'mm', e.DI * 1000, 1);
+      continue;
+    }
+    let valor;
+    if (c.tipo === 'material') valor = MATERIALES.find((m) => m.n === p.nManning)?.nombre ?? String(p.nManning);
+    else if (c.tipo === 'opciones') {
+      const opciones = typeof c.opciones === 'function' ? c.opciones() : c.opciones;
+      valor = opciones.find((o) => String(o.valor) === String(p[c.clave]))?.nombre ?? String(p[c.clave]);
+    } else if (c.tipo === 'casilla') valor = p[c.clave] ? 'Sí' : 'No';
+    else valor = leerControl(c);
+    agregar(id, tab, g, c.etiqueta, c.unidad ?? '', valor, c.dec);
+  }
+  for (const [clave, etiqueta, unidad, dec, valor] of CONSTANTES) {
+    filas.push({ clave: `p|${clave}`, bloque: 'Parámetros', grupo: 'Constantes del modelo', etiqueta, unidad, valor: valor(p), dec });
+  }
+  for (const t of TABS) {
+    if (!PINTORES[t.id]) continue;
+    captura = [];
+    try {
+      PINTORES[t.id]();
+    } finally {
+      const capturadas = captura;
+      captura = null;
+      agregarResultados(filas, t.nombre, capturadas[0] ?? []);
+      if (capturadas[1]) agregarResultados(filas, t.nombre, capturadas[1], `${t.nombre} · Experimento de Reynolds`);
+    }
+  }
+  return {
+    nombre,
+    momento: relojSimulado(sim.t).texto,
+    detalle: `Q bombeo ${fmt(p.Qbombeo)} L/s · grifo ${fmt(r.Hcasa)} m.c.a. · $\u00a0${fmt(r.costo.costo, 0)} al mes`,
+    filas,
+  };
+}
+
+async function exportarExcel(boton) {
+  const estado = fichas.datos.estadoExcel;
+  boton.disabled = true;
+  estado.textContent = 'Preparando el libro de Excel…';
+  try {
+    // Se deja pintar el aviso antes de armar el libro (es un cálculo síncrono)
+    await new Promise((listo) => setTimeout(listo, 30));
+    recalcular();
+    const ahora = new Date();
+    const ci = r.ciclo;
+    const c = r.canal;
+    const cumplen = r.checks.filter((x) => x.nivel === 'ok').length;
+    const bytes = crearLibro({
+      meta: {
+        fecha: ahora.toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' }),
+        fechaObjeto: ahora,
+        reloj: relojSimulado(sim.t).texto,
+      },
+      resumen: [
+        ['Estado del servicio en la vivienda de análisis', r.casa.cerrada ? `Ramal ${r.casa.j} cerrado` : ESTADOS_SERVICIO[r.estado]],
+        ['Vivienda de análisis', `Ramal ${r.casa.id.replace('-', ', vivienda ')}`],
+        ['Carga disponible en el grifo', r.Hcasa, 'm.c.a.'],
+        ['Presión mínima en la red (diseño, hora pico)', r.redDiseno.presionMin, 'm.c.a.'],
+        ['Nivel del tanque', sim.nivel, 'm'],
+        ['Bomba', r.bomba ? `Encendida${p.controlBomba === 'automatico' ? ` (se apaga a ${fmt(p.nivelParada)} m)` : ''}` : `Apagada (arranca a ${fmt(p.nivelArranque)} m)`],
+        ['Horas de bombeo al día', r.horasDia, 'h'],
+        ['Costo mensual de bombeo', r.costo.costo, 'COP'],
+        ['Criterios de diseño que se cumplen', `${cumplen} de ${r.checks.length}`],
+        ['Arroyo', c.desborde ? `Desborde: faltan ${fmt(p.Qcrecida - c.Qcap)} m³/s` : `Sin desborde (${fmt((p.Qcrecida / c.Qcap) * 100, 0)} % de la capacidad)`],
+      ],
+      actual: instantanea('Al exportar'),
+      registro,
+      ciclo: {
+        automatico: p.controlBomba === 'automatico', alcanza: r.alcanza,
+        Dtanque: p.Dtanque, hA: p.nivelArranque, hP: p.nivelParada, Qb: lps(p.Qbombeo), Qs: lps(p.Qdemanda),
+        cotaRio: p.cotaRio, cotaTanque: p.cotaTanque, hf: r.hfBombeo, eficiencia: p.eficiencia,
+        tarifa: p.tarifaKWh, cargoFijo: p.cargoFijo, At: r.At, dV: ci.dV,
+        tEnc: ci.tLlenado, tApag: ci.tVaciado, ciclo: ci.ciclo, horasDia: r.horasDia, arranquesHora: ci.arranquesHora,
+        nivelMedio: r.nivelMedio, Hmedia: r.Hmedia, Vmes: r.Vmes, m: r.costo.m, energia: r.costo.energia, costo: r.costo.costo,
+      },
+      revision: r.checks.map((x) => ({ texto: x.texto, nivel: x.nivel, detalle: x.detalle })),
+      cantidades: r.cantidades.filas,
+    });
+    const nombre = nombreArchivo(ahora);
+    descargarArchivo(bytes, nombre);
+    estado.textContent = `Listo: se descargó ${nombre} (${registro.filas.length} filas de la serie de tiempo, ${registro.escenarios.length} escenarios).`;
+  } catch (e) {
+    console.error(e);
+    estado.textContent = 'No se pudo crear el archivo de Excel. Revisa la consola del navegador.';
+  } finally {
+    boton.disabled = false;
+  }
+}
+
+/**
+ * Avanza el tanque con el control de la bomba: guarda los arranques y paradas con su
+ * instante exacto y suma la energía del tramo.
+ */
+function avanzarTanque(segundos) {
+  const st = D.avanzarTanque(p, sim, segundos);
+  for (const e of st.eventos) {
+    const causa = e.bomba ? `el nivel bajó al arranque (${fmt(p.nivelArranque)} m)` : `el nivel subió a la parada (${fmt(p.nivelParada)} m)`;
+    registro.agregarEvento(e.t, e.nivel, e.bomba, causa);
+  }
+  registro.acumular(D.energiaTramo(p, st.tBomba, st.areaNivel, r.hfBombeo), st.tBomba);
+  sim.nivel = st.nivel;
+  sim.bomba = st.bomba;
+  sim.arranques += st.arranques;
+}
+
+/** Avanza el tiempo simulado; corta el paso en cada marca del registro para tomar la muestra exacta. */
+function pasoSimulacion(segundos) {
+  const fin = sim.t + segundos;
+  for (let k = 0; k < 2000 && sim.t < fin - 1e-9; k++) {
+    if (registro.proxima <= sim.t + 1e-6) { tomarMuestra(); continue; }
+    const hasta = Math.min(fin, registro.proxima);
+    avanzarTanque(hasta - sim.t);
+    sim.t = hasta;
+  }
+  if (registro.proxima <= sim.t + 1e-6) tomarMuestra();
+}
+
 function pintarEstados() {
   const acu = document.getElementById('estadoAcueducto');
   const arr = document.getElementById('estadoArroyo');
@@ -1137,7 +1521,7 @@ function pintarEstados() {
   const bom = document.getElementById('estadoBomba');
   const tb0 = r.bomba
     ? `Bomba encendida: ${fmt(p.Qbombeo)} L/s${p.controlBomba === 'automatico' ? ` (se apaga a ${fmt(p.nivelParada)} m)` : ''}`
-    : `Bomba apagada: tanque lleno, arranca a ${fmt(p.nivelArranque)} m`;
+    : `Bomba apagada (arranca a ${fmt(p.nivelArranque)} m)`;
   if (bom) {
     const sp = bom.querySelector('.texto');
     if (sp.textContent !== tb0) sp.textContent = tb0;
@@ -1223,6 +1607,9 @@ function controlesTiempo() {
     sim.corriendo = !sim.corriendo;
     btn.textContent = sim.corriendo ? 'Pausar' : 'Reanudar';
     btn.setAttribute('aria-pressed', String(sim.corriendo));
+    // Mientras corre, el panel se repinta cada 250 ms; al pausar se pinta el
+    // estado exacto (a 6 h por segundo, 250 ms son hora y media simulada).
+    if (!sim.corriendo) pintarPanel();
   });
   const sel = document.getElementById('selVelocidad');
   sel.addEventListener('change', () => { sim.factor = parseFloat(sel.value); });
@@ -1232,7 +1619,9 @@ function controlesTiempo() {
     sim.t = HORA_INICIAL;
     sim.bomba = true;
     sim.arranques = 0;
+    registro.reiniciar(HORA_INICIAL);
     cambio();
+    tomarMuestra();
   });
 }
 
@@ -1243,12 +1632,7 @@ function bucle(ahora) {
   const dt = Math.min(0.1, (ahora - ultimo) / 1000);
   ultimo = ahora;
   if (sim.corriendo) {
-    const paso = dt * sim.factor;
-    const st = D.avanzarTanque(p, sim, paso);
-    sim.t = st.t;
-    sim.nivel = st.nivel;
-    sim.bomba = st.bomba;
-    sim.arranques += st.arranques;
+    pasoSimulacion(dt * sim.factor);
     recalcular();
     escena?.actualizar(p, r, sim.nivel);
     if (ahora - ultimoPanel > 250) {
@@ -1256,7 +1640,11 @@ function bucle(ahora) {
       pintarEstados();
       pintarReloj();
       const dinamicas = ['tanque', 'captacion', 'vivienda', 'tuberias', 'red'];
-      if (dinamicas.includes(tabActiva)) {
+      if (tabActiva === 'datos') {
+        const conGrafica = ahora - ultimaGrafica > 1000;
+        if (conGrafica) ultimaGrafica = ahora;
+        pintarDatos(conGrafica);
+      } else if (dinamicas.includes(tabActiva)) {
         const f = fichas[tabActiva];
         const datos = PINTORES[tabActiva]();
         setHTML(f.metricas, datos.metricas);
