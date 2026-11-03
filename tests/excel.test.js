@@ -106,6 +106,7 @@ test('Libro de la simulación: hojas, escenarios y fórmulas del ciclo', () => {
     cotaRio: p.cotaRio, cotaTanque: p.cotaTanque, hf: r.hfBombeo, eficiencia: p.eficiencia, tarifa: p.tarifaKWh, cargoFijo: p.cargoFijo,
     At: r.At, dV: ci.dV, tEnc: ci.tLlenado, tApag: ci.tVaciado, ciclo: ci.ciclo, horasDia: r.horasDia, arranquesHora: ci.arranquesHora,
     nivelMedio: r.nivelMedio, Hmedia: r.Hmedia, Vmes: r.Vmes, m: r.costo.m, energia: r.costo.energia, costo: r.costo.costo,
+    etaMotor: r.etaMotor, motorHP: r.bombas.acueducto.motor.hp, capta: r.capta,
   };
   const datos = {
     meta: { fecha: '1 de noviembre de 2026', reloj: 'Día 1, 08:00' },
@@ -113,19 +114,22 @@ test('Libro de la simulación: hojas, escenarios y fórmulas del ciclo', () => {
     actual,
     registro: reg,
     ciclo,
-    revision: r.checks,
+    revision: r.revisionTotal,
     cantidades: r.cantidades.filas,
+    perfil: { puntos: r.rio.calidad.puntos, marcas: [{ km: 44, texto: 'Bocatoma' }] },
   };
   const hojas = construirHojas(datos);
-  assert.deepEqual(hojas.map((h) => h.nombre), ['Resumen', 'Parámetros y resultados', 'Serie de tiempo', 'Arranques y paradas', 'Ciclo y costo', 'Revisión del diseño', 'Cantidades de obra']);
+  assert.deepEqual(hojas.map((h) => h.nombre), ['Resumen', 'Parámetros y resultados', 'Serie de tiempo', 'Arranques y paradas', 'Ciclo y costo', 'Revisión del diseño', 'Cantidades de obra', 'Perfil del río']);
   // Una columna por escenario guardado más el estado al exportar
   assert.deepEqual(hojas[1].filas[3].map((c) => c?.v), ['Variable', 'Unidad', 'Base', 'Al exportar']);
   // La fila que solo existe al exportar queda vacía en el escenario guardado
   assert.equal(hojas[1].filas.find((f) => f[0] === 'Rebose')[2], null);
   // Las fórmulas de la hoja Ciclo y costo apuntan a las celdas correctas
   const hojaCiclo = hojas[4].filas;
-  assert.equal(hojaCiclo[21][1].f, 'B21/(B9-B10)/3600');   // fila 22 de Excel: t_enc
-  assert.equal(hojaCiclo[32][1].f, 'B31*B30+B16');         // fila 33 de Excel: C = m·V + b
+  assert.equal(hojaCiclo[18][0], 'Eficiencia del motor η_m');   // fila 19 de Excel
+  assert.equal(hojaCiclo[22][1].f, 'B22/(B9-B10)/3600');   // fila 23 de Excel: t_enc
+  assert.equal(hojaCiclo[31][1].f, 'B15*B17*B18*B30/(B14*B19*3600000)');   // fila 32: m con η·η_m
+  assert.equal(hojaCiclo[33][1].f, 'B32*B31+B16');         // fila 34 de Excel: C = m·V + b
   // Con las celdas de entrada, las fórmulas dan el mismo costo que el simulador
   const B = {};
   hojaCiclo.forEach((f, k) => { if (f[1] && typeof f[1] === 'object') B[k + 1] = f[1].v; });
@@ -133,18 +137,24 @@ test('Libro de la simulación: hojas, escenarios y fórmulas del ciclo', () => {
   const tEnc = dV / (B[9] - B[10]) / 3600;
   const horas = (24 * tEnc) / (tEnc + dV / B[10] / 3600);
   const Hm = B[12] + (B[7] + B[8]) / 2 - B[11] + B[13];
-  const m = (B[15] * B[17] * B[18] * Hm) / (B[14] * 3600000);
+  const m = (B[15] * B[17] * B[18] * Hm) / (B[14] * B[19] * 3600000);
   assert.ok(Math.abs(m * B[9] * horas * 3600 * 30 + B[16] - r.costo.costo) < 1e-3);
-  // La revisión y las cantidades pasan completas
-  assert.equal(hojas[5].filas.length, 4 + r.checks.length);
+  // La revisión (acueducto, río, bombas y riego) y las cantidades pasan completas
+  assert.equal(hojas[5].filas.length, 4 + r.revisionTotal.length);
+  assert.ok(r.revisionTotal.length > r.checks.length);
+  assert.deepEqual([...new Set(hojas[5].filas.slice(4).map((f) => f[0]))], ['Acueducto', 'Río', 'Bombas', 'Riego']);
   assert.equal(hojas[6].filas.length, 4 + r.cantidades.filas.length);
-  // El libro completo se puede descomprimir y trae las siete hojas
+  // Perfil del río: una fila cada 0.5 km del km 0 al 50, con la bocatoma marcada
+  assert.equal(hojas[7].filas.length, 4 + 101);
+  assert.equal(hojas[7].filas[4 + 88][8].v, 'Bocatoma');
+  // El libro completo se puede descomprimir y trae las ocho hojas
   const zip = leerZip(crearLibro(datos));
   assert.ok(zip['xl/worksheets/sheet5.xml'].includes('<f>PI()*B6^2/4</f>'));
   assert.ok(zip['xl/worksheets/sheet7.xml'].includes('Tubería principal'));
+  assert.ok(zip['xl/worksheets/sheet8.xml'].includes('Coliformes fecales'));
   // En el Resumen, la descripción de cada hoja ocupa B:C y se ajusta (cabe a lo ancho al imprimir)
   const resumen = zip['xl/worksheets/sheet1.xml'];
-  assert.ok(resumen.includes('<mergeCells count="6">'));
+  assert.ok(resumen.includes('<mergeCells count="7">'));
   assert.ok(resumen.indexOf('</sheetData>') < resumen.indexOf('<mergeCells') && resumen.indexOf('<mergeCells') < resumen.indexOf('<pageMargins'));
 });
 

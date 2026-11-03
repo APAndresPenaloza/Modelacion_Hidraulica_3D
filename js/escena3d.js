@@ -1,14 +1,17 @@
 /**
  * escena3d.js — Representación 3D del sistema con Three.js
  * Río → captación y bombeo → aducción → tanque → distribución → grifo de la vivienda,
- * y un arroyo canalizado con compuerta que descarga a un pozo de disipación.
+ * y un arroyo canalizado con compuerta que descarga a un pozo de disipación. El río
+ * sube y se enturbia con las lluvias, lleva la pluma de un vertimiento, y un cultivo
+ * de la zona rural se riega con su propia bomba.
  *
- * La escena solo dibuja: todos los números vienen de modelo.js (calcularSistema).
+ * La escena solo dibuja: todos los números vienen de sistema.js.
  */
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/CSS2DRenderer.js';
 import * as M from './modelo.js';
+import * as G from './riego.js';
 
 // ── Escalas y posiciones de la escena ──────────────────────────────────────
 const VS = 0.6;           // escala vertical: 1 m de cota = 0.6 unidades
@@ -56,10 +59,22 @@ const CAP = {
 };
 CAP.x0 = CAP.xi0 - CAP.muro; CAP.x1 = CAP.xi1 + CAP.muro;
 CAP.z0 = CAP.zi0 - CAP.muro; CAP.z1 = CAP.zi1 + CAP.muro;
-CAP.crestaVert = CAP.aguaDes - 0.12;
+// Cresta del vertedero apenas sobre el fondo de la rejilla: así el agua pasa al pozo
+// mientras el río alcance a entrar por la rejilla (cota mínima de captación)
+CAP.crestaVert = CAP.yRej0 + 0.05;
 
 // Franja del río donde se mueven los trazadores de la corriente
 const RIO = { x0: -46.0, x1: CAP.x0 - 0.4, z0: -55, z1: 72 };
+
+// Vertimientos que se ven en la escena (orilla este): antes de la bocatoma (zona baja,
+// km 40) y después de la ciudad (km 46.5). Los de las zonas alta y media quedan aguas
+// arriba, fuera de la escena: el río ya llega teñido.
+const VERTIMIENTO_ESCENA = { baja: { z: -40 }, abajo: { z: 14 } };
+const COLOR_VERTIMIENTO = { domestica: 0x9a7744, tratada: 0xb4ccb8, cafe: 0x7a4a1c, agricola: 0x93b842 };
+const COLOR_RIO = { limpio: 0x3197c7, turbio: 0xb98a52 };
+// Lote de cultivo de la zona rural y su bomba de riego (aguas abajo de la ciudad)
+const CAMPO = { x0: -28, x1: -9, z0: 28, z1: 40 };
+const BOMBA_RIEGO = { z: 31 };
 
 function cortarCaptacion(x, z, y) {
   const e = 1e-6;
@@ -171,12 +186,12 @@ export function alturaTerreno(x, z) {
   return cortarCaptacion(x, z, y);
 }
 
-function texturaAgua() {
+function texturaAgua(fondo = '#2a8fbe') {
   const c = document.createElement('canvas');
   c.width = 128;
   c.height = 128;
   const g = c.getContext('2d');
-  g.fillStyle = '#2a8fbe';
+  g.fillStyle = fondo;
   g.fillRect(0, 0, 128, 128);
   for (let i = 0; i < 70; i++) {
     g.strokeStyle = `rgba(210, 240, 250, ${0.08 + Math.random() * 0.22})`;
@@ -572,7 +587,9 @@ export class Escena {
     this.aguas();
 
     this.grupos = {
-      bomba: this.grupo('captacion'),
+      bomba: this.grupo('bombas'),
+      vertimiento: this.grupo('rio'),
+      riego: this.grupo('riego'),
       aduccion: this.grupo('tuberias'),
       tanque: this.grupo('tanque'),
       distribucion: this.grupo('tuberias'),
@@ -587,6 +604,7 @@ export class Escena {
     this.flujoDistribucion = new FlujoTubo(this.scene);
     this.flujoAcometida = new FlujoTubo(this.scene, 160);
     this.flujoCaptacion = new FlujoCaptacion(this.scene);
+    this.flujoRiego = new FlujoTubo(this.scene, 160);
     this.particulasRio();
     this.chorroGrifo = new Chorro(this.scene, 70, 0.06);
     this.chorroCompuerta = new Chorro(this.scene, 420, 0.12);
@@ -679,16 +697,17 @@ export class Escena {
   }
 
   aguas() {
-    this.texRio = texturaAgua();
+    this.texRio = texturaAgua('#e4e4e4');
     this.texRio.repeat.set(2, 22);
     const rio = new THREE.Mesh(
       new THREE.PlaneGeometry(15, 190),
-      new THREE.MeshStandardMaterial({ map: this.texRio, color: 0xffffff, roughness: 0.25, metalness: 0.05, transparent: true, opacity: 0.92 }),
+      new THREE.MeshStandardMaterial({ map: this.texRio, color: COLOR_RIO.limpio, roughness: 0.25, metalness: 0.05, transparent: true, opacity: 0.92 }),
     );
     rio.rotation.x = -Math.PI / 2;
     rio.position.set(X_RIO - 0.5, 2.5 * VS, -5);
     rio.receiveShadow = true;
-    rio.userData.tab = 'captacion';
+    rio.userData.tab = 'rio';
+    this.rioMalla = rio;
     this.scene.add(rio);
     this.seleccionables.push(rio);
 
@@ -754,7 +773,7 @@ export class Escena {
       if (z > RIO.z1) { this.nacerEnRio(i); continue; }
       this.rioX[i] = x;
       this.rioZ[i] = z;
-      aux.position.set(x, Y_RIO + 0.03, z);
+      aux.position.set(x, (this.yRio ?? Y_RIO) + 0.03, z);
       aux.scale.set(0.09, 0.03, 0.22);
       aux.updateMatrix();
       this.rioPart.setMatrixAt(i, aux.matrix);
@@ -779,25 +798,7 @@ export class Escena {
     const techo = caja(5.6, 0.25, 4.6, 0x7d8c8f);
     techo.position.set(X_BOMBA, y0 + 3.5, 0);
     g.add(techo);
-    // Bomba: voluta + motor + volante que gira según el caudal
-    const metal = new THREE.MeshStandardMaterial({ color: COLOR.bomba, roughness: 0.4, metalness: 0.5 });
-    const voluta = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.75, 0.7, 24), metal);
-    voluta.rotation.x = Math.PI / 2;
-    voluta.position.set(X_BOMBA - 0.4, y0 + 1.0, 0);
-    voluta.castShadow = true;
-    const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1.6, 20), metal);
-    motor.rotation.z = Math.PI / 2;
-    motor.position.set(X_BOMBA + 0.9, y0 + 1.0, 0);
-    motor.castShadow = true;
-    this.volante = new THREE.Group();
-    const aspa = new THREE.MeshStandardMaterial({ color: 0xe8b04a, roughness: 0.5 });
-    for (let i = 0; i < 4; i++) {
-      const a = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.0, 0.16), aspa);
-      a.rotation.x = (i * Math.PI) / 4;
-      this.volante.add(a);
-    }
-    this.volante.position.set(X_BOMBA + 1.8, y0 + 1.0, 0);
-    g.add(voluta, motor, this.volante);
+    // Las bombas (una o varias, con su reserva) las arma construirUnidades() según el diseño
     // Piloto de estado sobre el techo: verde encendida, rojo apagada
     this.luzBomba = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16, 12), new THREE.MeshStandardMaterial({ color: 0x2f7d5b, emissive: 0x2f7d5b, emissiveIntensity: 0.9 }));
     this.luzBomba.position.set(X_BOMBA, y0 + 4.0, 0);
@@ -854,10 +855,13 @@ export class Escena {
       m.rotation.x = -Math.PI / 2;
       m.position.set((x0 + x1) / 2, y, (z0 + z1) / 2);
       g.add(m);
+      return m;
     };
-    lamina(C.x0, C.xi0, C.zRej0, C.zRej1, C.aguaDes);
-    lamina(C.xi0, C.xi1, C.zi0, C.zVert, C.aguaDes);
-    lamina(C.xi0, C.xi1, C.zVert + C.eVert, C.zi1, C.aguaPozo);
+    this.laminas = {
+      vano: lamina(C.x0, C.xi0, C.zRej0, C.zRej1, C.aguaDes),
+      desarenador: lamina(C.xi0, C.xi1, C.zi0, C.zVert, C.aguaDes),
+      pozo: lamina(C.xi0, C.xi1, C.zVert + C.eVert, C.zi1, C.aguaPozo),
+    };
     // Barandas sobre los muros
     const yb = C.tope;
     for (const [x0, x1, z0, z1] of [[C.x0 + 0.3, C.x0 + 0.36, C.z0 + 0.3, C.z1 - 0.3], [C.x1 - 0.36, C.x1 - 0.3, C.z0 + 0.3, C.z1 - 0.3]]) {
@@ -1440,9 +1444,12 @@ export class Escena {
   // ── Etiquetas ─────────────────────────────────────────────────────────
   crearEtiquetas() {
     const defs = [
-      ['rio', 'captacion', 'Río (captación)'],
+      ['rio', 'rio', 'Río'],
+      ['vertimiento', 'rio', 'Vertimiento'],
       ['bocatoma', 'captacion', 'Bocatoma y desarenador'],
-      ['bomba', 'captacion', 'Estación de bombeo'],
+      ['bomba', 'bombas', 'Estación de bombeo'],
+      ['riego', 'riego', 'Cultivo con riego'],
+      ['bombaRiego', 'bombas', 'Bomba de riego'],
       ['aduccion', 'tuberias', 'Aducción'],
       ['tanque', 'tanque', 'Tanque de almacenamiento'],
       ['distribucion', 'tuberias', 'Conducción'],
@@ -1453,7 +1460,7 @@ export class Escena {
     ];
     for (const [id, tab, titulo] of defs) {
       const el = document.createElement('div');
-      const secundaria = ['rio', 'aduccion', 'distribucion', 'piezo', 'red'].includes(id);
+      const secundaria = ['rio', 'aduccion', 'distribucion', 'piezo', 'red', 'bombaRiego'].includes(id);
       el.className = 'etiqueta3d' + (tab ? '' : ' piezo') + (secundaria ? ' secundaria' : '');
       el.innerHTML = `<b>${titulo}</b><span></span>`;
       if (tab) {
@@ -1466,6 +1473,8 @@ export class Escena {
         });
       }
       const obj = new CSS2DObject(el);
+      if (id === 'rio' || id === 'vertimiento') obj.center.set(0, 0.5);   // el río queda al borde izquierdo de la vista
+      if (id === 'bombaRiego') obj.center.set(1, 0.5);
       this.scene.add(obj);
       this.etiquetas[id] = { obj, el, valor: el.querySelector('span') };
     }
@@ -1562,6 +1571,32 @@ export class Escena {
     if (kR !== this.claves.red) { this.construirRed(); this.claves.red = kR; }
     const kK = k(p.perimetro, p.anchoCanal, p.taludCanal ?? 0);
     if (kK !== this.claves.canal) { this.construirCanal(); this.claves.canal = kK; }
+    const bA = r.bombas.acueducto;
+    const kU = [bA.tipoId, bA.N, bA.unidades, bA.motor.hp].join('|');
+    if (kU !== this.claves.unidades) { this.construirUnidades(); this.claves.unidades = kU; }
+    const cal = r.rio.calidad;
+    const kV = [p.vertTipo, p.vertZona, k(p.cotaRio, cal.inicio ? cal.inicio.Qv / cal.inicio.Qrio : 0)].join('|');
+    if (kV !== this.claves.vertimiento) { this.construirVertimiento(); this.claves.vertimiento = kV; }
+    const bR = r.bombas.riego;
+    const kG = [p.cultivo, p.metodoRiego, bR.tipoId, bR.unidades, k(p.cotaRio, r.especs.Riego.DI)].join('|');
+    if (kG !== this.claves.riego) { this.construirRiego(); this.claves.riego = kG; }
+
+    // Río: nivel de la lámina y color (sedimento de las lluvias y contaminación que llega)
+    const yRio = p.cotaRio * VS;
+    this.yRio = yRio;
+    this.rioMalla.position.y = yRio;
+    const turbio = Math.min(1, Math.max(0, Math.log10(Math.max(1, p.sedimento) / 40) / Math.log10(3000 / 40)));
+    const sucio = Math.min(1, Math.max(0, Math.log10(Math.max(1, cal.bocatoma.CF) / 100) / 3, (cal.bocatoma.DBO - 2) / 20));
+    const colorRio = new THREE.Color(COLOR_RIO.limpio).lerp(new THREE.Color(COLOR_RIO.turbio), turbio);
+    if (cal.inicio && !VERTIMIENTO_ESCENA[p.vertZona]) colorRio.lerp(new THREE.Color(COLOR_VERTIMIENTO[p.vertTipo] ?? 0x6b5b3e), sucio * 0.5);
+    this.rioMalla.material.color.copy(colorRio);
+    // Captación: el agua entra por la rejilla mientras el río la alcance
+    CAP.aguaDes = Math.max(CAP.crestaVert + 0.03, Math.min(CAP.tope - 0.15, yRio - 0.05));
+    CAP.aguaPozo = r.capta ? Math.max(CAP.pisoPozo + 0.35, CAP.aguaDes - 0.22) : CAP.pisoPozo + 0.3;
+    this.laminas.vano.position.y = Math.max(CAP.yRej0 + 0.02, yRio);
+    this.laminas.vano.visible = yRio > CAP.yRej0 + 0.02;
+    this.laminas.desarenador.position.y = CAP.aguaDes;
+    this.laminas.pozo.position.y = CAP.aguaPozo;
 
     // Tanque
     const base = 38 * VS;
@@ -1645,8 +1680,20 @@ export class Escena {
     // Etiquetas
     const V = (x, y, z) => new THREE.Vector3(x, y, z);
     const nivelCasa = r.estado === 'normal' ? 'ok' : (r.estado === 'baja-presion' ? 'aviso' : 'alerta');
-    this.etiqueta('rio', `Cota ${fmt(p.cotaRio)} m`, 'ok', V(X_RIO - 1, 3.2, 14));
-    this.etiqueta('bomba', r.bomba ? `Encendida: ${fmt(p.Qbombeo)} L/s, H = ${fmt(r.alturaBombeo)} m` : `Apagada: arranca a ${fmt(p.nivelArranque)} m`, r.bomba ? 'ok' : 'aviso', V(X_BOMBA, alturaTerreno(X_BOMBA, 0) + 5.6, 0));
+    const nivelRio = !r.capta || cal.bocatoma.CF > p.cfMax || cal.odMin.od < p.odMin ? 'alerta' : (r.rio.sed.Cpasa > 500 ? 'aviso' : 'ok');
+    this.etiqueta('rio', `Cota ${fmt(p.cotaRio)} m · ${fmt(r.rio.boc.Q)} m³/s · ${Math.round(p.sedimento)} mg/L`, nivelRio, V(X_RIO - 3, yRio + 1.2, 8));
+    const posV = VERTIMIENTO_ESCENA[p.vertZona];
+    const textoV = !cal.inicio ? 'Sin vertimiento' : `${fmt(p.Qvert, 1)} L/s, km ${fmt(cal.kmV, 1)}${posV ? '' : ' (aguas arriba)'}`;
+    this.etiqueta('vertimiento', textoV, cal.bocatoma.CF > p.cfMax ? 'alerta' : 'ok', posV ? V(X_RIO + 2, yRio + 2.4, posV.z) : V(X_RIO, yRio + 7, -50));
+    this.etiquetas.vertimiento.obj.visible = Boolean(cal.inicio);
+    const textoBomba = r.bomba ? `${bA.N} × ${bA.motor.hp} HP: ${fmt(p.Qbombeo)} L/s, H = ${fmt(r.alturaBombeo)} m`
+      : (r.capta ? `Apagada: arranca a ${fmt(p.nivelArranque)} m` : 'Detenida: el río no alcanza la rejilla');
+    this.etiqueta('bomba', textoBomba, r.bomba ? 'ok' : (r.capta ? 'aviso' : 'alerta'), V(X_BOMBA, alturaTerreno(X_BOMBA, 0) + 5.6, 0));
+    const rg = r.riego;
+    const nivelRiego = rg.checks.some((x) => x.nivel === 'alerta') ? 'alerta' : 'ok';
+    this.etiqueta('riego', `${rg.dis.c.nombre.split(' (')[0]}, ${fmt(p.areaRiego, 1)} ha · ${rg.regando ? `regando ${fmt(M.m3sAlps(rg.dis.Q))} L/s` : 'en espera'}`, nivelRiego,
+      V((CAMPO.x0 + CAMPO.x1) / 2 + 3, alturaTerreno(-18, 34) + 3.2, (CAMPO.z0 + CAMPO.z1) / 2 - 3));
+    this.etiqueta('bombaRiego', `${bR.N} × ${bR.motor.hp} HP · ${rg.zona.nombre.toLowerCase()}`, 'ok', V(this.orillaEste(BOMBA_RIEGO.z, yRio) + 0.6, alturaTerreno(-31, BOMBA_RIEGO.z) + 1.4, BOMBA_RIEGO.z));
     const textoBocatoma = r.Qin > 0 ? `Retiene granos ≥ ${fmt(des.dMin * 1000, 3)} mm` : 'Sin caudal';
     this.etiqueta('bocatoma', textoBocatoma, 'ok', V(-34, 8, -19));
     this.etiqueta('aduccion', r.bomba ? `V = ${fmt(r.aduccion.V)} m/s · ${r.aduccion.regimen}` : 'Sin flujo: bomba apagada', r.bomba ? 'ok' : 'aviso', V(-16, alturaTerreno(-16, 0) + 2.8, 0));
@@ -1663,6 +1710,374 @@ export class Escena {
     this.etiqueta('piezo', '', 'ok', V((rT + RED.xE) / 2, (sup + yEnt) / 2 + 1.6, 0.6));
   }
 
+  // ── Unidades de bombeo de la estación del acueducto ──────────────────────
+  /**
+   * Una unidad de bombeo: bomba + motor. Horizontales (centrífuga, carcasa partida,
+   * multietapa) con el motor al lado; verticales (turbina, sumergible, axial) con el
+   * motor arriba y la columna hacia el pozo. La de reserva va en gris y no gira.
+   */
+  unidadBomba(tipo, escala, reserva) {
+    const u = new THREE.Group();
+    const color = reserva ? 0x8a969a : COLOR.bomba;
+    const metal = new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.5 });
+    const s = escala;
+    let volante = null;
+    const aspas = () => {
+      const v = new THREE.Group();
+      const aspa = new THREE.MeshStandardMaterial({ color: reserva ? 0xb9bfc1 : 0xe8b04a, roughness: 0.5 });
+      for (let k = 0; k < 4; k++) {
+        const a = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.0 * s, 0.16 * s), aspa);
+        a.rotation.x = (k * Math.PI) / 4;
+        v.add(a);
+      }
+      return v;
+    };
+    if (['turbina', 'sumergible', 'axial'].includes(tipo)) {
+      // Motor vertical sobre su cabezal; la columna baja hacia el agua
+      const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.42 * s, 0.42 * s, (tipo === 'sumergible' ? 0.6 : 1.3) * s, 18), metal);
+      motor.position.y = (tipo === 'sumergible' ? 0.3 : 1.25) * s;
+      const cabezal = new THREE.Mesh(new THREE.CylinderGeometry(0.55 * s, 0.6 * s, 0.5 * s, 18), metal);
+      cabezal.position.y = 0.25 * s;
+      const columna = new THREE.Mesh(new THREE.CylinderGeometry(0.18 * s, 0.18 * s, 2.6, 12), metal);
+      columna.position.y = -1.3;
+      u.add(cabezal, columna);
+      if (tipo !== 'sumergible') u.add(motor);
+      else {
+        const tablero = new THREE.Mesh(new THREE.BoxGeometry(0.5 * s, 0.7 * s, 0.25 * s), new THREE.MeshStandardMaterial({ color: reserva ? 0x9aa3a6 : 0xd7dcdc, roughness: 0.6 }));
+        tablero.position.set(0.7 * s, 0.6 * s, 0);
+        u.add(tablero);
+      }
+      volante = aspas();
+      volante.rotation.z = Math.PI / 2;
+      volante.position.y = (tipo === 'sumergible' ? 0.65 : 2.0) * s;
+      if (tipo !== 'sumergible') u.add(volante);
+      else volante = null;
+    } else {
+      let cuerpo;
+      if (tipo === 'partida') {
+        cuerpo = new THREE.Mesh(new THREE.BoxGeometry(1.2 * s, 1.1 * s, 0.9 * s), metal);
+        cuerpo.position.set(-0.45 * s, 0, 0);
+      } else if (tipo === 'multietapa') {
+        cuerpo = new THREE.Group();
+        for (let k = 0; k < 4; k++) {
+          const etapa = new THREE.Mesh(new THREE.CylinderGeometry(0.48 * s, 0.48 * s, 0.32 * s, 18), metal);
+          etapa.rotation.z = Math.PI / 2;
+          etapa.position.x = (-1.05 + k * 0.36) * s;
+          cuerpo.add(etapa);
+        }
+      } else {
+        cuerpo = new THREE.Mesh(new THREE.CylinderGeometry(0.75 * s, 0.75 * s, 0.7 * s, 24), metal);
+        cuerpo.rotation.x = Math.PI / 2;
+        cuerpo.position.x = -0.4 * s;
+      }
+      const motor = new THREE.Mesh(new THREE.CylinderGeometry(0.5 * s, 0.5 * s, 1.6 * s, 20), metal);
+      motor.rotation.z = Math.PI / 2;
+      motor.position.x = 0.9 * s;
+      volante = aspas();
+      volante.position.x = 1.8 * s;
+      u.add(cuerpo, motor, volante);
+    }
+    u.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    return { grupo: u, volante };
+  }
+
+  construirUnidades() {
+    const g = this.grupos.bomba;
+    if (this.unidades) { g.remove(this.unidades); liberar(this.unidades); }
+    const b = this.r.bombas.acueducto;
+    const total = b.unidades;
+    const y0 = alturaTerreno(X_BOMBA, 0);
+    const paso = total <= 3 ? 1.35 : 1.0;
+    const escala = Math.min(1.15, Math.max(0.55, Math.cbrt(b.motor.hp / 15))) * (total <= 3 ? 1 : 0.8);
+    this.unidades = new THREE.Group();
+    this.volantes = [];
+    for (let k = 0; k < total; k++) {
+      const reserva = k >= b.N;
+      const { grupo, volante } = this.unidadBomba(b.tipoId, escala, reserva);
+      grupo.position.set(X_BOMBA, y0 + 1.0, (k - (total - 1) / 2) * paso);
+      this.unidades.add(grupo);
+      if (volante) this.volantes.push({ volante, reserva });
+    }
+    // Múltiples de succión y de descarga que unen las unidades
+    if (total > 1) {
+      const largo = (total - 1) * paso + 0.4;
+      const tubo = new THREE.MeshStandardMaterial({ color: 0x6b7c83, roughness: 0.5, metalness: 0.4 });
+      for (const dx of [-1.55, 2.45]) {
+        const m = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, largo, 10), tubo);
+        m.rotation.x = Math.PI / 2;
+        m.position.set(X_BOMBA + dx, y0 + 1.0, 0);
+        this.unidades.add(m);
+      }
+    }
+    g.add(this.unidades);
+    this.indexar(g);
+  }
+
+  // ── Río: nivel, color por el sedimento y vertimiento ─────────────────────
+  /** x del borde del agua en la orilla este del río a la distancia z (donde el terreno sale del agua). */
+  orillaEste(z, yAgua) {
+    for (let x = X_RIO; x < X_RIO + 14; x += 0.1) if (alturaTerreno(x, z) > yAgua + 0.15) return x;
+    return X_RIO + 6;
+  }
+
+  construirVertimiento() {
+    const g = this.grupos.vertimiento;
+    g.children.slice().forEach((o) => { g.remove(o); liberar(o); });
+    this.pluma = null;
+    const p = this.p;
+    const cal = this.r.rio.calidad;
+    const pos = VERTIMIENTO_ESCENA[p.vertZona];
+    if (!cal.inicio || !pos) { this.indexar(g); return; }
+    const yAgua = p.cotaRio * VS;
+    const xBorde = this.orillaEste(pos.z, yAgua);
+    const yT = alturaTerreno(xBorde + 1.2, pos.z);
+    // Cabezal de concreto en la orilla y tubo de descarga sobre el agua
+    const cabezal = caja(1.0, 1.4, 2.0, COLOR.concretoOsc);
+    cabezal.position.set(xBorde + 1.0, Math.max(yAgua + 0.5, yT - 0.2), pos.z);
+    const tubo = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 2.4, 14), new THREE.MeshStandardMaterial({ color: 0x5b5f61, roughness: 0.6, metalness: 0.3 }));
+    tubo.rotation.z = Math.PI / 2;
+    tubo.position.set(xBorde - 0.4, Math.max(yAgua + 0.35, yT - 0.4), pos.z);
+    g.add(cabezal, tubo);
+    // Pluma: franja sobre el agua que se abre y se diluye río abajo
+    const color = new THREE.Color(COLOR_VERTIMIENTO[p.vertTipo] ?? 0x6b5b3e);
+    const dil = cal.inicio.Qv / Math.max(1e-6, cal.inicio.Qrio);
+    const intensidad = Math.min(0.95, 0.6 + 0.4 * Math.min(1, Math.log10(1 + 1000 * dil) / 3));
+    const largo = Math.min(RIO.z1 - pos.z, 46);
+    const n = 40;
+    const pts = [];
+    const cols = [];
+    const idx = [];
+    for (let k = 0; k <= n; k++) {
+      const d = (k / n) * largo;
+      const ancho = 0.9 + 6.5 * (1 - Math.exp(-d / 11));
+      const xa = xBorde - 0.2;
+      const a = intensidad * (1 - k / n) ** 1.4;
+      pts.push(xa - ancho, yAgua + 0.03, pos.z + d, xa, yAgua + 0.03, pos.z + d);
+      cols.push(color.r, color.g, color.b, a * 0.6, color.r, color.g, color.b, a);
+      if (k < n) idx.push(2 * k, 2 * k + 2, 2 * k + 1, 2 * k + 1, 2 * k + 2, 2 * k + 3);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 4));
+    geo.setIndex(idx);
+    const franja = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+    franja.renderOrder = 2;
+    g.add(franja);
+    // Partículas que salen del tubo y bajan con la corriente
+    const nP = 110;
+    const mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 6, 4), new THREE.MeshBasicMaterial({ color: color.clone().multiplyScalar(0.8), transparent: true, opacity: 0.85 }), nP);
+    mesh.frustumCulled = false;
+    g.add(mesh);
+    this.pluma = { mesh, n: nP, x0: xBorde - 1.4, z0: pos.z, largo, yAgua, s: new Float32Array(nP).map(() => Math.random()), lado: new Float32Array(nP).map(() => Math.random()) };
+    this.indexar(g);
+  }
+
+  pasoPluma(dt) {
+    const pl = this.pluma;
+    if (!pl) return;
+    const aux = this.auxPluma || (this.auxPluma = new THREE.Object3D());
+    for (let i = 0; i < pl.n; i++) {
+      pl.s[i] += dt * 0.09;
+      if (pl.s[i] >= 1) { pl.s[i] -= 1; pl.lado[i] = Math.random(); }
+      const d = pl.s[i] * pl.largo;
+      const ancho = 0.9 + 6.5 * (1 - Math.exp(-d / 11));
+      aux.position.set(pl.x0 + 1.2 - pl.lado[i] * ancho, pl.yAgua + 0.05, pl.z0 + d);
+      aux.scale.set(0.16 * (1 - 0.6 * pl.s[i]), 0.04, 0.3 * (1 - 0.6 * pl.s[i]));
+      aux.updateMatrix();
+      pl.mesh.setMatrixAt(i, aux.matrix);
+    }
+    pl.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // ── Riego: cultivo, bomba de riego y tubería ─────────────────────────────
+  construirRiego() {
+    const g = this.grupos.riego;
+    g.children.slice().forEach((o) => { g.remove(o); liberar(o); });
+    const p = this.p;
+    const cultivo = G.CULTIVOS[p.cultivo] ?? G.CULTIVOS.banano;
+    const metodo = p.metodoRiego;
+    const C = CAMPO;
+    const yC = (x, z) => alturaTerreno(x, z);
+    // Suelo del lote
+    const suelo = new THREE.Mesh(new THREE.PlaneGeometry(C.x1 - C.x0, C.z1 - C.z0), new THREE.MeshStandardMaterial({ color: cultivo.forma === 'pasto' ? 0x7e8f45 : 0x8a6d47, roughness: 1 }));
+    suelo.rotation.x = -Math.PI / 2;
+    suelo.position.set((C.x0 + C.x1) / 2, yC((C.x0 + C.x1) / 2, (C.z0 + C.z1) / 2) + 0.04, (C.z0 + C.z1) / 2);
+    suelo.receiveShadow = true;
+    g.add(suelo);
+    const ySuelo = suelo.position.y;
+    // Plantas en hileras a lo largo de x
+    const filas = [];
+    const separacion = { platanera: 1.7, palma: 2.6, pasto: 1.2, maiz: 0.9, mata: 1.0, arbol: 2.2, arbusto: 1.2 }[cultivo.forma] ?? 1.5;
+    for (let z = C.z0 + separacion / 2; z < C.z1 - 0.3; z += separacion) filas.push(z);
+    const enFila = Math.max(4, Math.floor((C.x1 - C.x0 - 0.6) / separacion));
+    const posiciones = [];
+    filas.forEach((z, k) => {
+      for (let j = 0; j < enFila; j++) {
+        const x = C.x0 + 0.5 + ((j + 0.5 + (k % 2) * 0.35) / enFila) * (C.x1 - C.x0 - 1);
+        posiciones.push([x, z]);
+      }
+    });
+    const verde = new THREE.MeshStandardMaterial({ color: cultivo.color, roughness: 0.75, side: THREE.DoubleSide });
+    const tronco = new THREE.MeshStandardMaterial({ color: 0x6b5236, roughness: 0.9 });
+    const instancias = (geo, mat, ajustar) => {
+      const m = new THREE.InstancedMesh(geo, mat, posiciones.length);
+      const aux = new THREE.Object3D();
+      posiciones.forEach(([x, z], k) => {
+        aux.position.set(x, ySuelo, z);
+        aux.rotation.set(0, (k * 2.399) % (2 * Math.PI), 0);
+        aux.scale.set(1, 1, 1);
+        ajustar(aux, k);
+        aux.updateMatrix();
+        m.setMatrixAt(k, aux.matrix);
+      });
+      m.castShadow = true;
+      m.receiveShadow = true;
+      g.add(m);
+    };
+    const forma = cultivo.forma;
+    if (forma === 'platanera' || forma === 'palma') {
+      const alto = forma === 'palma' ? 2.2 : 1.6;
+      instancias(new THREE.CylinderGeometry(0.1, 0.14, alto, 7), tronco, (a) => { a.position.y += alto / 2; });
+      // Copa de hojas en abanico: un cono abierto boca arriba y otro más chico encima
+      const hoja = new THREE.ConeGeometry(forma === 'palma' ? 1.15 : 0.95, forma === 'palma' ? 0.55 : 0.8, 8, 1, true);
+      instancias(hoja, verde, (a) => { a.position.y += alto + 0.15; a.rotation.x = Math.PI; });
+      instancias(new THREE.ConeGeometry(0.45, 0.7, 6), verde, (a) => { a.position.y += alto + 0.45; });
+    } else if (forma === 'arbol' || forma === 'arbusto') {
+      const alto = forma === 'arbol' ? 1.0 : 0.35;
+      const radio = forma === 'arbol' ? 0.85 : 0.45;
+      instancias(new THREE.CylinderGeometry(0.08, 0.11, alto, 6), tronco, (a) => { a.position.y += alto / 2; });
+      instancias(new THREE.SphereGeometry(radio, 9, 7), verde, (a) => { a.position.y += alto + radio * 0.7; a.scale.set(1, 0.85, 1); });
+    } else if (forma === 'maiz') {
+      instancias(new THREE.CylinderGeometry(0.04, 0.06, 1.5, 5), verde, (a) => { a.position.y += 0.75; });
+      instancias(new THREE.ConeGeometry(0.28, 0.6, 6), verde, (a) => { a.position.y += 1.1; });
+    } else if (forma === 'mata') {
+      instancias(new THREE.SphereGeometry(0.38, 8, 6), verde, (a) => { a.position.y += 0.3; a.scale.set(1, 0.75, 1); });
+    } else {
+      instancias(new THREE.ConeGeometry(0.22, 0.45, 5), verde, (a) => { a.position.y += 0.22; });
+    }
+    // Agua de riego: lámina (inundación), surcos con agua, mangueras de goteo o emisores
+    const aguaMat = new THREE.MeshStandardMaterial({ color: COLOR.agua, roughness: 0.2, transparent: true, opacity: 0.55, depthWrite: false });
+    this.aguaRiego = [];
+    if (metodo === 'inundacion') {
+      const lam = new THREE.Mesh(new THREE.PlaneGeometry(C.x1 - C.x0 - 0.2, C.z1 - C.z0 - 0.2), aguaMat);
+      lam.rotation.x = -Math.PI / 2;
+      lam.position.set((C.x0 + C.x1) / 2, ySuelo + 0.08, (C.z0 + C.z1) / 2);
+      g.add(lam);
+      this.aguaRiego.push(lam);
+    } else if (metodo === 'surcos') {
+      for (let k = 0; k < filas.length - 1; k++) {
+        const s = new THREE.Mesh(new THREE.PlaneGeometry(C.x1 - C.x0 - 0.6, 0.28), aguaMat);
+        s.rotation.x = -Math.PI / 2;
+        s.position.set((C.x0 + C.x1) / 2, ySuelo + 0.06, (filas[k] + filas[k + 1]) / 2);
+        g.add(s);
+        this.aguaRiego.push(s);
+      }
+    } else if (metodo === 'goteo' || metodo === 'microaspersion') {
+      const manguera = new THREE.MeshStandardMaterial({ color: 0x1f2326, roughness: 0.7 });
+      for (const z of filas) {
+        const m = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, C.x1 - C.x0 - 0.6, 6), manguera);
+        m.rotation.z = Math.PI / 2;
+        m.position.set((C.x0 + C.x1) / 2, ySuelo + 0.05, z + 0.25);
+        g.add(m);
+      }
+    }
+    // Emisores que rocían (aspersión, microaspersión, pivote)
+    this.emisores = [];
+    if (metodo === 'aspersion') {
+      for (let x = C.x0 + 3; x < C.x1 - 1; x += 6) {
+        for (let z = C.z0 + 3; z < C.z1 - 1; z += 6) this.emisores.push({ x, z, y: ySuelo + 1.3, r: 3.0, h: 0.9 });
+      }
+    } else if (metodo === 'microaspersion') {
+      posiciones.forEach(([x, z], k) => { if (k % 2 === 0) this.emisores.push({ x, z: z + 0.25, y: ySuelo + 0.2, r: 0.75, h: 0.25 }); });
+    } else if (metodo === 'pivote') {
+      this.pivote = { x: (C.x0 + C.x1) / 2, z: (C.z0 + C.z1) / 2, largo: Math.min(C.x1 - C.x0, C.z1 - C.z0) / 2 - 0.3, y: ySuelo + 1.6 };
+      const brazo = new THREE.Mesh(new THREE.BoxGeometry(this.pivote.largo, 0.12, 0.12), new THREE.MeshStandardMaterial({ color: 0xb8c2c5, roughness: 0.4, metalness: 0.5 }));
+      brazo.geometry.translate(this.pivote.largo / 2, 0, 0);
+      brazo.position.set(this.pivote.x, this.pivote.y, this.pivote.z);
+      const torre = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.2, 1.6, 8), brazo.material);
+      torre.position.set(this.pivote.x, ySuelo + 0.8, this.pivote.z);
+      g.add(brazo, torre);
+      this.pivote.brazo = brazo;
+      for (let k = 1; k <= 6; k++) this.emisores.push({ pivote: k / 6, y: this.pivote.y - 0.1, r: 0.6, h: 0.1 });
+    }
+    if (metodo !== 'pivote') this.pivote = null;
+    if (this.emisores.length) {
+      const nGotas = Math.min(900, this.emisores.length * 14);
+      this.gotas = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 5, 4), new THREE.MeshBasicMaterial({ color: COLOR.aguaClara }), nGotas);
+      this.gotas.frustumCulled = false;
+      g.add(this.gotas);
+    } else this.gotas = null;
+    // Bomba de riego en la orilla y tubería hasta el cultivo
+    const yAgua = p.cotaRio * VS;
+    const xB = this.orillaEste(BOMBA_RIEGO.z, yAgua) + 1.6;
+    const yB = alturaTerreno(xB, BOMBA_RIEGO.z);
+    const losa = caja(2.2, 0.5, 1.9, COLOR.concreto);
+    losa.position.set(xB, yB + 0.1, BOMBA_RIEGO.z);
+    g.add(losa);
+    const br = this.r.bombas.riego;
+    const total = br.unidades;
+    this.volantesRiego = [];
+    for (let k = 0; k < total; k++) {
+      const { grupo, volante } = this.unidadBomba(br.tipoId, 0.5, k >= br.N);
+      grupo.position.set(xB - 0.2, yB + 0.7, BOMBA_RIEGO.z + (k - (total - 1) / 2) * 0.8);
+      g.add(grupo);
+      if (volante) this.volantesRiego.push({ volante, reserva: k >= br.N });
+    }
+    const yTubo = yB + 0.7;
+    const pts = [
+      new THREE.Vector3(xB - 1.6, yAgua - 0.4, BOMBA_RIEGO.z),
+      new THREE.Vector3(xB - 1.4, yTubo, BOMBA_RIEGO.z),
+      new THREE.Vector3(xB - 0.9, yTubo, BOMBA_RIEGO.z),
+      new THREE.Vector3(xB + 1.2, yTubo, BOMBA_RIEGO.z),
+      new THREE.Vector3(C.x0 - 0.4, ySuelo + 0.35, BOMBA_RIEGO.z),
+      new THREE.Vector3(C.x0 + 0.2, ySuelo + 0.3, BOMBA_RIEGO.z),
+    ];
+    this.curvaRiego = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
+    const rad = Math.max(0.12, this.r.especs.Riego.DI * ESC_TUBO);
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(this.curvaRiego, 120, rad, 12, false), this.materialTubo()));
+    const principal = new THREE.Mesh(new THREE.CylinderGeometry(rad * 0.8, rad * 0.8, C.z1 - C.z0 - 0.4, 10), new THREE.MeshStandardMaterial({ color: COLOR.tubo, roughness: 0.4 }));
+    principal.rotation.x = Math.PI / 2;
+    principal.position.set(C.x0 + 0.2, ySuelo + 0.3, (C.z0 + C.z1) / 2);
+    g.add(principal);
+    this.flujoRiego.setCurva(this.curvaRiego, rad, Math.max(0.045, rad * 0.24));
+    this.ySueloRiego = ySuelo;
+    this.indexar(g);
+  }
+
+  pasoRiego(dt, regando) {
+    for (const m of this.aguaRiego ?? []) m.visible = regando;
+    for (const { volante, reserva } of this.volantesRiego ?? []) if (!reserva && regando) volante.rotation.x += dt * 14;
+    this.tRiego = (this.tRiego ?? 0) + dt;
+    if (this.pivote && regando) this.pivote.brazo.rotation.y -= dt * 0.12;
+    const gotas = this.gotas;
+    if (!gotas) return;
+    gotas.visible = regando;
+    if (!regando) return;
+    const aux = this.auxGotas || (this.auxGotas = new THREE.Object3D());
+    const porEmisor = Math.floor(gotas.count / this.emisores.length);
+    let i = 0;
+    this.emisores.forEach((e, k) => {
+      let ex = e.x;
+      let ez = e.z;
+      if (this.pivote) {
+        const ang = -this.pivote.brazo.rotation.y;
+        ex = this.pivote.x + Math.cos(ang) * this.pivote.largo * e.pivote;
+        ez = this.pivote.z + Math.sin(ang) * this.pivote.largo * e.pivote;
+      }
+      for (let j = 0; j < porEmisor; j++, i++) {
+        const fase = (this.tRiego * 0.9 + j / porEmisor + k * 0.37) % 1;
+        const ang = j * 2.399 + k;
+        const radio = e.r * fase;
+        aux.position.set(ex + Math.cos(ang) * radio, e.y + e.h * 4 * fase * (1 - fase) - (this.pivote ? fase * 1.3 : fase * (e.y - this.ySueloRiego) * 0.9), ez + Math.sin(ang) * radio);
+        aux.scale.setScalar(0.045);
+        aux.updateMatrix();
+        gotas.setMatrixAt(i, aux.matrix);
+      }
+    });
+    gotas.count = i;
+    gotas.instanceMatrix.needsUpdate = true;
+  }
+
   // ── Bucle de animación ────────────────────────────────────────────────
   animar() {
     const dt = Math.min(0.05, this.reloj.getDelta());
@@ -1671,8 +2086,14 @@ export class Escena {
       const r = this.r;
       this.texRio.offset.y += dt * 0.08;               // el río baja de la Sierra hacia +z
       this.texMar.offset.x += dt * 0.006;
-      this.volante.rotation.x += dt * Math.min(30, r.Qin * 1000 * 0.9);
+      const giro = dt * Math.min(30, (r.Qin * 1000 * 0.9) / Math.max(1, r.bombas.acueducto.N));
+      for (const { volante, reserva } of this.volantes ?? []) {
+        if (!reserva && r.Qin > 0) volante.rotation[volante.rotation.z ? 'y' : 'x'] += giro;
+      }
       this.pasoRio(dt);
+      this.pasoPluma(dt);
+      this.pasoRiego(dt, r.riego.regando);
+      this.flujoRiego.paso(dt, r.riego.regando ? r.riego.tubo.V : 0);
       this.flujoCaptacion.paso(dt);
       this.flujoAduccion.paso(dt, r.Qin > 0 ? r.aduccion.V : 0);
       this.flujoDistribucion.paso(dt, r.Qsal > 0 ? r.distribucion.V : 0);

@@ -2,11 +2,16 @@
  * sistema.js — Une el modelo base (modelo.js) con los criterios de diseño (diseno.js):
  * río → bocatoma → succión → bomba → ADUCCIÓN → tanque → CONDUCCIÓN → RED DE DISTRIBUCIÓN
  * → acometida → medidor → llave de paso → grifo de la vivienda de análisis.
+ * Además: el río y su cuenca (rio.js), las estaciones de bombeo (bombas.js) y el riego
+ * de la zona rural (riego.js).
  * Funciones puras: reciben los parámetros y el estado (nivel, bomba, hora) y devuelven
  * todos los resultados.
  */
 import * as M from './modelo.js';
 import * as D from './diseno.js';
+import * as R from './rio.js';
+import * as B from './bombas.js';
+import * as G from './riego.js';
 
 export const PARAMETROS_DISENO = Object.freeze({
   // Control de la bomba por niveles
@@ -46,9 +51,25 @@ export const PARAMETROS_DISENO = Object.freeze({
   recubrimiento: 1.0, cama: 0.1, holgura: 0.25,
   // Criterios de referencia (editables; contrastar con el RAS)
   Vmin: 0.5, Vmax: 3.0, VmaxSuccion: 1.5, presionMaxRed: 60,
+  // Río y cuenca: lluvias, sedimento, vertimiento y acuífero
+  lluvia: 'normal',               // escenario que fija la cota del río y el sedimento
+  sedimento: 150,                 // mg/L de sólidos en suspensión
+  vertTipo: 'tratada', vertZona: 'media', Qvert: 20,   // L/s
+  sueloAcuifero: 'limo', tipoAcuifero: 'libre', profFreatico: 6,   // m
+  odMin: 4, cfMax: 2000,          // mg/L y NMP/100 mL (referencias de calidad)
+  // Estaciones de bombeo: A = acueducto, R = riego
+  bombaAnalisis: 'acueducto',
+  tipoBombaA: 'centrifuga', rpmA: 3500, nBombasA: 1, reservaA: true, cotaEjeA: 6,
+  tipoBombaR: 'centrifuga', rpmR: 3500, nBombasR: 1, reservaR: false, succionR: 2, eficienciaR: 0.68,
+  // Riego de la zona rural
+  zonaRiego: 'baja', cultivo: 'banano', metodoRiego: 'microaspersion',
+  areaRiego: 10, horasRiego: 12, epoca: 'seca',          // ha y h/día
+  matRiego: 'pvc', claseRiego: 'RDE 32.5', dnRiego: '6"', Lriego: 600,
 });
 
-const TUBOS = ['Succion', 'Aduccion', 'Conduccion', 'Principal', 'Ramal', 'Acometida'];
+const TUBOS = ['Succion', 'Aduccion', 'Conduccion', 'Principal', 'Ramal', 'Acometida', 'Riego'];
+/** El pozo de succión queda un poco más bajo que el río (pérdidas en la rejilla y el desarenador) [m]. */
+export const DESCENSO_POZO = 0.4;
 
 /** Ajusta clase y diámetro a valores del catálogo y copia los diámetros internos al modelo base. */
 export function sincronizarTubos(p) {
@@ -63,6 +84,8 @@ export function sincronizarTubos(p) {
   p.Ddistribucion = e.Conduccion.DI;
   p.nivelParada = Math.min(p.nivelParada, p.hMax);
   p.nivelArranque = Math.min(p.nivelArranque, p.nivelParada - 0.2);
+  p.nBombasA = Math.max(1, Math.round(p.nBombasA));
+  p.nBombasR = Math.max(1, Math.round(p.nBombasR));
   const N = Math.round(p.nRamales);
   const K = Math.round(p.nViviendas);
   if (p.ramalCerrado > N) p.ramalCerrado = 0;
@@ -116,9 +139,23 @@ export function calcular(p, estado) {
   const hfBombeo = aduccion.hfReal + succion.hfReal;
   const Hb = M.alturaBombeo(p.cotaRio, p.cotaTanque, nivel, hfBombeo);
   const potencia = M.potenciaBomba(Qb, Hb, p.eficiencia);
+  // Estación de bombeo del acueducto: se diseña con la altura media del ciclo; la altura
+  // estática va del nivel de arranque al de parada mientras la bomba trabaja
+  const mes0 = D.costoMensual(p, hfBombeo);
+  const auto = p.controlBomba === 'automatico';
+  const estatica = (h) => p.cotaTanque + h - p.cotaRio;
+  const cfgA = {
+    Q: Qb, Hest: mes0.Hmedia - hfBombeo, hf: hfBombeo,
+    HestMin: auto && mes0.alcanza ? estatica(p.nivelArranque) : mes0.Hmedia - hfBombeo,
+    HestMax: auto && mes0.alcanza ? estatica(p.nivelParada) : mes0.Hmedia - hfBombeo,
+    tipo: p.tipoBombaA, rpm: p.rpmA, N: p.nBombasA, reserva: p.reservaA, etaB: p.eficiencia,
+    succion: { elevacion: p.cotaEjeA, T: R.ZONAS.baja.Tagua, zs: p.cotaEjeA - (p.cotaRio - DESCENSO_POZO), hfs: succion.hfReal },
+  };
+  const bombaA = B.disenarBomba(cfgA);
   // Costo mensual: con el ciclo completo de la bomba y la altura dinámica media, no con
-  // el nivel de este instante (si no, bajaría cuando la bomba se apaga y subiría al prenderse)
-  const mes = D.costoMensual(p, hfBombeo);
+  // el nivel de este instante (si no, bajaría cuando la bomba se apaga y subiría al prenderse).
+  // Se paga la energía eléctrica: incluye la eficiencia del motor elegido.
+  const mes = D.costoMensual(p, hfBombeo, bombaA.motor.eta);
   const { ciclo, horasDia, Vmes, costo } = mes;
   const golpe = D.golpeAriete(aduccion.V, e.Aduccion);
 
@@ -183,12 +220,50 @@ export function calcular(p, estado) {
 
   const cantidades = D.cantidadesRed(p, redDiseno, e.Acometida);
 
+  // Río: caudal en la bocatoma, sedimentos, calidad del agua por zonas y acuífero
+  const sed = R.sedimentos(p, Qb, horasDia, dis.desarenador.dMin);
+  const rio = R.calcularRio(p, sed);
+
+  // Riego de la zona rural y su estación de bombeo
+  const zonaR = R.ZONAS[p.zonaRiego] ?? R.ZONAS.baja;
+  const riego = G.calcularRiego(p, e.Riego, {
+    agua: rio.calidad.zonas[p.zonaRiego]?.toma ?? rio.calidad.bocatoma,
+    Qrio: rio.calidad.hid[p.zonaRiego]?.Q ?? rio.boc.Q,
+    ciudad: { QMD: M.lpsAm3s(p.Qdemanda), qCasaQMD: qMedCasa * p.k1 },
+  });
+  const cfgR = {
+    Q: riego.dis.Q, Hest: riego.Hest, hf: riego.hf,
+    tipo: p.tipoBombaR, rpm: p.rpmR, N: p.nBombasR, reserva: p.reservaR, etaB: p.eficienciaR,
+    succion: { elevacion: zonaR.elevacion, T: zonaR.Tagua, zs: p.succionR, hfs: riego.succion.hfReal },
+  };
+  const bombaR = B.disenarBomba(cfgR);
+  riego.regando = G.regando(riego, hora);
+  riego.Emes = (bombaR.Pe / 1000) * riego.horasAct * 30;
+  riego.costoMes = riego.Emes * p.tarifaKWh;
+  riego.checks = G.revisarRiego(p, riego, e.Riego);
+  const bombas = {
+    acueducto: bombaA, riego: bombaR, cfgA, cfgR,
+    aptitudA: B.aptitudTipos(cfgA), aptitudR: B.aptitudTipos(cfgR),
+    checksA: B.revisarBomba(bombaA, 'Bomba del acueducto'),
+    checksR: B.revisarBomba(bombaR, 'Bomba de riego', { exigirReserva: false }),
+  };
+  // Toda la revisión del diseño, por componente (para el Excel y el conteo)
+  const revisionTotal = [
+    ...checks.map((c) => ({ ...c, area: 'Acueducto' })),
+    ...rio.checks.map((c) => ({ ...c, area: 'Río' })),
+    ...bombas.checksA.map((c) => ({ ...c, area: 'Bombas' })),
+    ...bombas.checksR.map((c) => ({ ...c, area: 'Bombas' })),
+    ...riego.checks.map((c) => ({ ...c, area: 'Riego' })),
+  ];
+
   return {
     ...dis,
     Qin, Qsal, Qent, rebose, vacio, lleno, At,
     bomba, hora, factor, QsalDem,
     succion, aduccion, alturaBombeo: Hb, potencia, Vmes, costo, horasDia, ciclo, golpe,
     hfBombeo, Hmedia: mes.Hmedia, nivelMedio: mes.nivelMedio, potenciaMedia: mes.potencia, alcanza: mes.alcanza,
+    potenciaElectrica: mes.potenciaElectrica, etaMotor: bombaA.motor.eta, capta: mes.capta,
+    rio, riego, bombas, revisionTotal,
     distribucion: conduccion, conduccion, Hentrada, Hestatica,
     red, redDiseno, casa, grifo, Hnodo,
     Hcasa, presionCasa: M.mcaAkPa(Math.max(0, Hcasa)), vGrifo, qGrifo,

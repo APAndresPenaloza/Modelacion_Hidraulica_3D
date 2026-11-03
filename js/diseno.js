@@ -18,6 +18,7 @@
  * (Resolución 0330 de 2017).
  */
 import * as M from './modelo.js';
+import { captaAgua } from './rio.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. CATÁLOGO DE TUBERÍAS
@@ -237,8 +238,13 @@ export function caudalSalida(p, horaDia) {
   return base + (p.incendio && p.hidrante ? M.lpsAm3s(p.Qincendio) : 0);
 }
 
-/** Interruptores de nivel con histéresis: apaga en la parada y vuelve a arrancar en el arranque. */
+/**
+ * Interruptores de nivel con histéresis: apaga en la parada y vuelve a arrancar en el
+ * arranque. Si el río baja de la rejilla de la bocatoma no hay agua que bombear y la
+ * bomba se detiene (protección contra marcha en seco).
+ */
 export function controlBomba(p, nivel, encendida) {
+  if (Number.isFinite(p.cotaRio) && !captaAgua(p.cotaRio)) return false;
   if (p.controlBomba !== 'automatico') return true;
   if (encendida && nivel >= p.nivelParada - 1e-9) return false;
   if (!encendida && nivel <= p.nivelArranque + 1e-9) return true;
@@ -322,7 +328,10 @@ export function cicloBomba(p) {
 
 /**
  * Costo mensual de bombeo con el ciclo completo de la bomba. Es un valor del mes, así
- * que no depende del instante ni de si la bomba está prendida en ese momento:
+ * que no depende del instante ni de si la bomba está prendida en ese momento.
+ * La energía que se paga es la eléctrica: se divide por la eficiencia de la bomba η y
+ * por la del motor η_m (etaM; con etaM = 1 queda solo la de la bomba).
+ * Si el río está por debajo de la rejilla, la bomba no trabaja (0 horas).
  *   - horas al día: las del ciclo, 24·t_enc/(t_enc + t_apag) (24 h con bombeo continuo);
  *   - volumen: V = Q_b · horas · 3600 · 30;
  *   - altura dinámica media: con control por niveles, mientras la bomba trabaja el nivel
@@ -331,31 +340,33 @@ export function cicloBomba(p) {
  *     el tanque se mantiene lleno (h_máx); si la bomba no alcanza el consumo, termina vacío (0).
  * hf: pérdidas por fricción de la succión y la aducción con el caudal de la bomba [m].
  */
-export function costoMensual(p, hf) {
+export function costoMensual(p, hf, etaM = 1) {
   const Qb = M.lpsAm3s(p.Qbombeo);
   const auto = p.controlBomba === 'automatico';
   const ciclo = cicloBomba(p);
   const alcanza = Qb > M.lpsAm3s(p.Qdemanda);
-  const horasDia = auto ? ciclo.horasDia : 24;
+  const capta = !Number.isFinite(p.cotaRio) || captaAgua(p.cotaRio);
+  const horasDia = !capta ? 0 : (auto ? ciclo.horasDia : 24);
   const nivelMedio = !alcanza ? 0 : (auto ? (p.nivelArranque + p.nivelParada) / 2 : p.hMax);
   const Hmedia = M.alturaBombeo(p.cotaRio, p.cotaTanque, nivelMedio, hf);
   const Vmes = M.volumenMensual(Qb, horasDia);
   return {
-    ciclo, alcanza, horasDia, nivelMedio, Hmedia, Vmes,
+    ciclo, alcanza, capta, horasDia, nivelMedio, Hmedia, Vmes, etaM,
     potencia: M.potenciaBomba(Qb, Hmedia, p.eficiencia),
-    costo: M.costoBombeo(Vmes, Hmedia, p.eficiencia, p.tarifaKWh, p.cargoFijo),
+    potenciaElectrica: M.potenciaBomba(Qb, Hmedia, p.eficiencia * etaM),
+    costo: M.costoBombeo(Vmes, Hmedia, p.eficiencia * etaM, p.tarifaKWh, p.cargoFijo),
   };
 }
 
 /**
- * Energía de un tramo de la simulación [kWh]: E = ρ·g·Q_b·∫H·dt/(η·3.6×10⁶), con
- * H(t) = z_t + h(t) − z_río + h_f, así que ∫H·dt = (z_t − z_río + h_f)·t_enc + ∫h·dt.
- * tBomba [s] y areaNivel [m·s] los devuelve avanzarTanque().
+ * Energía eléctrica de un tramo de la simulación [kWh]: E = ρ·g·Q_b·∫H·dt/(η·η_m·3.6×10⁶),
+ * con H(t) = z_t + h(t) − z_río + h_f, así que ∫H·dt = (z_t − z_río + h_f)·t_enc + ∫h·dt.
+ * tBomba [s] y areaNivel [m·s] los devuelve avanzarTanque(); etaM: eficiencia del motor.
  */
-export function energiaTramo(p, tBomba, areaNivel, hf) {
+export function energiaTramo(p, tBomba, areaNivel, hf, etaM = 1) {
   if (tBomba <= 0) return 0;
   const integralH = (p.cotaTanque - p.cotaRio + hf) * tBomba + areaNivel;
-  return (M.RHO * M.G * M.lpsAm3s(p.Qbombeo) * integralH) / (p.eficiencia * 3.6e6);
+  return (M.RHO * M.G * M.lpsAm3s(p.Qbombeo) * integralH) / (p.eficiencia * etaM * 3.6e6);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

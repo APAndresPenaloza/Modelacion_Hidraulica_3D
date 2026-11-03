@@ -45,7 +45,7 @@ export function crearGrafica(canvas, { xTitulo, yTitulo, formatoX, formatoY }) {
       plugins: {
         legend: {
           position: 'bottom',
-          labels: { color: c.tinta2, boxWidth: 14, boxHeight: 2, padding: 10 },
+          labels: { color: c.tinta2, boxWidth: 14, boxHeight: 2, padding: 10, filter: (item, datos) => !datos.datasets[item.datasetIndex]?.sinLeyenda },
         },
         tooltip: {
           callbacks: {
@@ -59,8 +59,9 @@ export function crearGrafica(canvas, { xTitulo, yTitulo, formatoX, formatoY }) {
 }
 
 /** Serie dibujada como línea continua. */
-export function serieLinea(etiqueta, datos, color, { punteada = false, ancho = 2, relleno = false, colorRelleno = null, escalon = false } = {}) {
+export function serieLinea(etiqueta, datos, color, { punteada = false, ancho = 2, relleno = false, colorRelleno = null, escalon = false, sinLeyenda = false } = {}) {
   return {
+    sinLeyenda,
     fill: relleno,
     stepped: escalon ? 'before' : false,
     label: etiqueta,
@@ -102,6 +103,7 @@ export function actualizarGrafica(grafica, series, limites = {}) {
     eje.border.color = c.linea;
     eje.min = limites[ejeId]?.min;
     eje.max = limites[ejeId]?.max;
+    eje.ticks.stepSize = limites[ejeId]?.paso;   // p. ej. 1 en un eje logarítmico (log₁₀)
   }
   grafica.options.plugins.legend.labels.color = c.tinta2;
   grafica.update('none');

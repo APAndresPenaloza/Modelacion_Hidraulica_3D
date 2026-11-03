@@ -4,7 +4,7 @@
  * Mientras corre el reloj se guarda una fila cada cierto tiempo simulado
  * (serie de tiempo) y cada vez que la bomba arranca o se apaga. Además se pueden
  * guardar escenarios (todos los parámetros y resultados de un momento) para
- * compararlos. Todo se descarga en un libro de Excel con siete hojas.
+ * compararlos. Todo se descarga en un libro de Excel con ocho hojas.
  * Este módulo no toca el DOM salvo en descargarArchivo().
  */
 import { crearXlsx, rangoTabla } from './excel.js';
@@ -308,7 +308,7 @@ function hojaEventos(registro) {
  */
 function hojaCiclo(c) {
   const e = (v, dec) => ({ v, dec, entrada: true });
-  const formulas = c.automatico && c.alcanza;
+  const formulas = c.automatico && c.alcanza && c.capta !== false;
   const filas = [
     [{ v: 'Ciclo de la bomba y costo mensual', estilo: 'titulo' }],
     [nota('Los datos de entrada están en azul; lo demás se calcula con fórmulas. Si cambias un dato, Excel recalcula el ciclo y el costo.')],
@@ -328,41 +328,45 @@ function hojaCiclo(c) {
     /* 16 */ ['Cargo fijo mensual b', e(c.cargoFijo, 0), 'COP', ''],
     /* 17 */ ['Densidad del agua ρ', e(997.05, 2), 'kg/m³', 'agua a 25 °C'],
     /* 18 */ ['Gravedad g', e(9.81, 2), 'm/s²', ''],
+    /* 19 */ ['Eficiencia del motor η_m', e(c.etaMotor ?? 1, 3), '', `motor de ${c.motorHP ?? '—'} HP elegido en la pestaña Bombas`],
     [sec('Ciclo de la bomba (ecuaciones lineales)'), sec(''), sec(''), sec('')],
-    /* 20 */ ['Área del tanque A', { f: 'PI()*B6^2/4', v: c.At, dec: 2 }, 'm²', 'A = π·D²/4'],
-    /* 21 */ ['Volumen entre interruptores ΔV', { f: 'B20*(B8-B7)', v: c.dV, dec: 2 }, 'm³', 'ΔV = A·(h_p − h_a)'],
+    /* 21 */ ['Área del tanque A', { f: 'PI()*B6^2/4', v: c.At, dec: 2 }, 'm²', 'A = π·D²/4'],
+    /* 22 */ ['Volumen entre interruptores ΔV', { f: 'B21*(B8-B7)', v: c.dV, dec: 2 }, 'm³', 'ΔV = A·(h_p − h_a)'],
   ];
   if (formulas) {
     filas.push(
-      /* 22 */ ['Tiempo encendida t_enc', { f: 'B21/(B9-B10)/3600', v: c.tEnc / 3600, dec: 2 }, 'h', 't_enc = ΔV/(Q_b − QMD)'],
-      /* 23 */ ['Tiempo apagada t_apag', { f: 'B21/B10/3600', v: c.tApag / 3600, dec: 2 }, 'h', 't_apag = ΔV/QMD'],
-      /* 24 */ ['Duración del ciclo', { f: 'B22+B23', v: c.ciclo / 3600, dec: 2 }, 'h', 't_enc + t_apag'],
-      /* 25 */ ['Horas de bombeo al día', { f: '24*B22/B24', v: c.horasDia, dec: 2 }, 'h', '24·t_enc/(t_enc + t_apag) = 24·QMD/Q_b'],
-      /* 26 */ ['Arranques por hora', { f: '1/B24', v: c.arranquesHora, dec: 3 }, '1/h', '1/ciclo'],
+      /* 23 */ ['Tiempo encendida t_enc', { f: 'B22/(B9-B10)/3600', v: c.tEnc / 3600, dec: 2 }, 'h', 't_enc = ΔV/(Q_b − QMD)'],
+      /* 24 */ ['Tiempo apagada t_apag', { f: 'B22/B10/3600', v: c.tApag / 3600, dec: 2 }, 'h', 't_apag = ΔV/QMD'],
+      /* 25 */ ['Duración del ciclo', { f: 'B23+B24', v: c.ciclo / 3600, dec: 2 }, 'h', 't_enc + t_apag'],
+      /* 26 */ ['Horas de bombeo al día', { f: '24*B23/B25', v: c.horasDia, dec: 2 }, 'h', '24·t_enc/(t_enc + t_apag) = 24·QMD/Q_b'],
+      /* 27 */ ['Arranques por hora', { f: '1/B25', v: c.arranquesHora, dec: 3 }, '1/h', '1/ciclo'],
       [sec('Costo mensual de bombeo (ecuación lineal)'), sec(''), sec(''), sec('')],
-      /* 28 */ ['Nivel medio mientras bombea', { f: '(B7+B8)/2', v: c.nivelMedio, dec: 3 }, 'm', '(h_a + h_p)/2'],
+      /* 29 */ ['Nivel medio mientras bombea', { f: '(B7+B8)/2', v: c.nivelMedio, dec: 3 }, 'm', '(h_a + h_p)/2'],
     );
   } else {
-    const motivo = !c.automatico ? 'bombeo continuo: la bomba nunca se apaga' : 'Q_b ≤ QMD: la bomba no alcanza a llenar el tanque';
+    const motivo = c.capta === false ? 'el río está por debajo de la rejilla: la bomba no trabaja'
+      : (!c.automatico ? 'bombeo continuo: la bomba nunca se apaga' : 'Q_b ≤ QMD: la bomba no alcanza a llenar el tanque');
+    const horas = c.capta === false ? 0 : 24;
     filas.push(
-      /* 22 */ ['Tiempo encendida t_enc', 'no se apaga', '', motivo],
-      /* 23 */ ['Tiempo apagada t_apag', '—', '', ''],
-      /* 24 */ ['Duración del ciclo', '—', '', ''],
-      /* 25 */ ['Horas de bombeo al día', { v: 24, dec: 2 }, 'h', 'trabaja todo el día'],
-      /* 26 */ ['Arranques por hora', { v: 0, dec: 3 }, '1/h', ''],
+      /* 23 */ ['Tiempo encendida t_enc', c.capta === false ? 'no arranca' : 'no se apaga', '', motivo],
+      /* 24 */ ['Tiempo apagada t_apag', '—', '', ''],
+      /* 25 */ ['Duración del ciclo', '—', '', ''],
+      /* 26 */ ['Horas de bombeo al día', { v: horas, dec: 2 }, 'h', horas ? 'trabaja todo el día' : 'no hay agua que captar'],
+      /* 27 */ ['Arranques por hora', { v: 0, dec: 3 }, '1/h', ''],
       [sec('Costo mensual de bombeo (ecuación lineal)'), sec(''), sec(''), sec('')],
-      /* 28 */ ['Nivel medio mientras bombea', { v: c.nivelMedio, dec: 3 }, 'm', c.alcanza ? 'el tanque se mantiene lleno' : 'el tanque termina vacío'],
+      /* 29 */ ['Nivel medio mientras bombea', { v: c.nivelMedio, dec: 3 }, 'm', c.alcanza ? 'el tanque se mantiene lleno' : 'el tanque termina vacío'],
     );
   }
   filas.push(
-    /* 29 */ ['Altura dinámica media H_m', { f: 'B12+B28-B11+B13', v: c.Hmedia, dec: 2 }, 'm', 'H_m = z_t + nivel medio − z_río + h_f'],
-    /* 30 */ ['Volumen bombeado al mes V', { f: 'B9*B25*3600*30', v: c.Vmes, dec: 2 }, 'm³', 'V = Q_b · horas · 3600 · 30'],
-    /* 31 */ ['Pendiente m (costo de subir 1 m³)', { f: 'B15*B17*B18*B29/(B14*3600000)', v: c.m, dec: 2 }, 'COP/m³', 'm = tarifa·ρ·g·H_m/(η·3.6×10⁶)'],
-    /* 32 */ ['Energía al mes E', { f: 'B17*B18*B29*B30/(B14*3600000)', v: c.energia, dec: 2 }, 'kWh', 'E = ρ·g·H_m·V/(η·3.6×10⁶)'],
-    /* 33 */ ['Costo mensual C', { f: 'B31*B30+B16', v: c.costo, moneda: true }, 'COP', 'C(V) = m·V + b'],
+    /* 30 */ ['Altura dinámica media H_m', { f: 'B12+B29-B11+B13', v: c.Hmedia, dec: 2 }, 'm', 'H_m = z_t + nivel medio − z_río + h_f'],
+    /* 31 */ ['Volumen bombeado al mes V', { f: 'B9*B26*3600*30', v: c.Vmes, dec: 2 }, 'm³', 'V = Q_b · horas · 3600 · 30'],
+    /* 32 */ ['Pendiente m (costo de subir 1 m³)', { f: 'B15*B17*B18*B30/(B14*B19*3600000)', v: c.m, dec: 2 }, 'COP/m³', 'm = tarifa·ρ·g·H_m/(η·η_m·3.6×10⁶)'],
+    /* 33 */ ['Energía eléctrica al mes E', { f: 'B17*B18*B30*B31/(B14*B19*3600000)', v: c.energia, dec: 2 }, 'kWh', 'E = ρ·g·H_m·V/(η·η_m·3.6×10⁶)'],
+    /* 34 */ ['Costo mensual C', { f: 'B32*B31+B16', v: c.costo, moneda: true }, 'COP', 'C(V) = m·V + b'],
     [],
     [nota('El costo es mensual: usa el ciclo completo de la bomba, así que no cambia cuando la bomba se apaga o se prende.')],
     [nota('Mientras la bomba trabaja el nivel sube en línea recta de h_a a h_p; como H es lineal en el nivel, su promedio es la altura con el nivel medio.')],
+    [nota('Se paga la energía eléctrica: la potencia en el eje se divide por la eficiencia de la bomba y la del motor.')],
   );
   return { nombre: 'Ciclo y costo', columnas: [46, 16, 10, 46], congelar: { filas: 4 }, horizontal: true, filas };
 }
@@ -371,15 +375,46 @@ function hojaRevision(revision) {
   const textos = { ok: 'Cumple', aviso: 'Aviso', alerta: 'No cumple' };
   const filas = [
     [{ v: 'Revisión de los criterios de diseño', estilo: 'titulo' }],
-    [nota('Estado al momento de exportar. Los criterios son valores de referencia editables; conviene contrastarlos con el RAS.')],
+    [nota('Estado al momento de exportar. Los criterios son valores de referencia editables; conviene contrastarlos con el RAS y con las normas de calidad del agua vigentes.')],
     [],
-    [enc('Criterio'), enc('Resultado'), enc('Detalle')],
+    [enc('Componente'), enc('Criterio'), enc('Resultado'), enc('Detalle')],
   ];
   // Un criterio o un detalle largo se parte en líneas dentro de su columna
   // (sin alto fijo: Excel agranda la fila lo necesario)
   const texto = (t, letras) => (String(t ?? '').length > letras ? { v: t, estilo: 'ajuste' } : t);
-  for (const c of revision) filas.push([texto(c.texto, 74), textos[c.nivel] ?? c.nivel, texto(c.detalle, 96)]);
-  return { nombre: 'Revisión del diseño', columnas: [70, 12, 90], congelar: { filas: 4 }, filtro: revision.length ? `A4:C${4 + revision.length}` : undefined, horizontal: true, filas };
+  for (const c of revision) filas.push([c.area ?? 'Acueducto', texto(c.texto, 66), textos[c.nivel] ?? c.nivel, texto(c.detalle, 84)]);
+  return { nombre: 'Revisión del diseño', columnas: [13, 62, 12, 80], congelar: { filas: 4 }, filtro: revision.length ? `A4:D${4 + revision.length}` : undefined, horizontal: true, filas };
+}
+
+/**
+ * Perfil de calidad del río: una fila cada 0.5 km desde el nacimiento hasta la
+ * desembocadura. perfil: { puntos, marcas: [{ km, texto }], nota }.
+ */
+function hojaPerfil(perfil) {
+  const filas = [
+    [{ v: 'Perfil de calidad del río', estilo: 'titulo' }],
+    [nota(perfil?.nota ?? 'Calidad del agua a lo largo del río con el vertimiento y el caudal del momento de exportar.')],
+    [],
+    [enc('Distancia (km)'), enc('Zona'), enc('DBO (mg/L)'), enc('Oxígeno disuelto (mg/L)'), enc('Saturación (mg/L)'),
+      enc('Déficit de oxígeno (mg/L)'), enc('Coliformes fecales (NMP/100 mL)'), enc('Nitratos (mg/L de N)'), enc('Punto')],
+  ];
+  const puntos = perfil?.puntos ?? [];
+  const marcas = perfil?.marcas ?? [];
+  for (const x of puntos) {
+    const aqui = marcas.filter((m) => Math.abs(m.km - x.km) < 0.25 - 1e-9).map((m) => m.texto).join('; ');
+    filas.push([num(x.km, 1), x.zonaNombre ?? x.zona, num(x.DBO, 2), num(x.OD, 2), num(x.ODsat, 2), num(x.ODsat - x.OD, 2),
+      { v: x.CF, dec: 0 }, num(x.NO3, 2), aqui ? { v: aqui, estilo: 'ajuste' } : null]);
+  }
+  if (!puntos.length) filas.push([nota('Sin datos del río.')]);
+  return {
+    nombre: 'Perfil del río',
+    columnas: [10, 11, 10, 12, 11, 12, 15, 11, 40],
+    congelar: { filas: 4 },
+    filtro: puntos.length ? `A4:I${4 + puntos.length}` : undefined,
+    altos: { 3: 45 },
+    horizontal: true,
+    filas,
+  };
 }
 
 function hojaCantidades(cantidades) {
@@ -398,14 +433,15 @@ function hojaCantidades(cantidades) {
  * meta: { fecha, reloj }; resumen: [[etiqueta, valor, unidad, dec]];
  * actual: instantánea { nombre, momento, filas }; ciclo: valores de la hoja Ciclo y costo.
  */
-export function construirHojas({ meta, resumen, actual, registro, ciclo, revision = [], cantidades = [] }) {
+export function construirHojas({ meta, resumen, actual, registro, ciclo, revision = [], cantidades = [], perfil = null }) {
   const contenido = [
     ['Parámetros y resultados', 'Todos los parámetros y resultados: una columna por escenario guardado y la última con el estado al exportar.'],
     ['Serie de tiempo', `Una fila cada ${nombreIntervalo(registro.intervalo)} de tiempo simulado: nivel, bomba, consumo, presiones, energía y costo acumulados.`],
     ['Arranques y paradas', 'Cada vez que la bomba arrancó o se apagó, con el nivel del tanque y la duración del tramo anterior.'],
     ['Ciclo y costo', 'Ciclo de la bomba y costo mensual escritos con fórmulas de Excel que se recalculan.'],
-    ['Revisión del diseño', 'Los criterios de diseño con su resultado (cumple, aviso o no cumple).'],
+    ['Revisión del diseño', 'Los criterios de diseño del acueducto, el río, las bombas y el riego, con su resultado (cumple, aviso o no cumple).'],
     ['Cantidades de obra', 'Tuberías, accesorios, excavación y cama de apoyo de la red del barrio.'],
+    ['Perfil del río', 'Oxígeno disuelto, DBO, coliformes y nitratos cada 0.5 km, del nacimiento a la desembocadura.'],
   ];
   return [
     hojaResumen({ meta, resumen, registro, hojas: contenido }),
@@ -415,6 +451,7 @@ export function construirHojas({ meta, resumen, actual, registro, ciclo, revisio
     hojaCiclo(ciclo),
     hojaRevision(revision),
     hojaCantidades(cantidades),
+    hojaPerfil(perfil),
   ];
 }
 

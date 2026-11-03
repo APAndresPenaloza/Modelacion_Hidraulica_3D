@@ -75,6 +75,11 @@ test('Control de la bomba: histéresis entre arranque y parada', () => {
   assert.equal(D.controlBomba(p, 3.0, false), true);   // llega al arranque: enciende
   assert.equal(D.controlBomba(p, 4.0, true), true);    // subiendo entre niveles: sigue encendida
   assert.equal(D.controlBomba({ controlBomba: 'continuo' }, 5, true), true);
+  // Con el río por debajo de la rejilla de la bocatoma (1.60 m + 0.15 m de lámina) no hay
+  // agua que bombear: la bomba se detiene en cualquier modo y a cualquier nivel
+  assert.equal(D.controlBomba({ ...p, cotaRio: 1.75 }, 2.0, false), true);
+  assert.equal(D.controlBomba({ ...p, cotaRio: 1.7 }, 2.0, false), false);
+  assert.equal(D.controlBomba({ controlBomba: 'continuo', cotaRio: 1.5 }, 5, true), false);
 });
 
 test('Tanque: el nivel queda entre los interruptores y la bomba arranca y para', () => {
@@ -118,9 +123,15 @@ test('Costo mensual: no cambia cuando la bomba se apaga o se prende', () => {
   cerca(r.nivelMedio, 3.875, 1e-12);
   cerca(r.Hmedia, 38 + 3.875 - 2.5 + r.hfBombeo, 1e-9);
   cerca(r.hfBombeo, r.succion.hfReal + r.aduccion.hfReal, 1e-12);
-  // C = m·V + b con m = 950·997.05·9.81·H̄/(0.7·3.6e6)
-  const m = (950 * 997.05 * 9.81 * r.Hmedia) / (0.7 * 3.6e6);
+  // C = m·V + b con m = 950·997.05·9.81·H̄/(0.7·η_m·3.6e6): se paga la energía eléctrica;
+  // el motor de la bomba (15 HP, 2 polos) tiene η_m = 0.91
+  assert.equal(r.bombas.acueducto.motor.hp, 15);
+  cerca(r.etaMotor, 0.91, 1e-12);
+  const m = (950 * 997.05 * 9.81 * r.Hmedia) / (0.7 * 0.91 * 3.6e6);
   cerca(r.costo.costo, m * 28123.2 + 150000, 1e-6);
+  assert.equal(Math.round(r.costo.costo), 5006231);
+  // Sin el motor (η_m = 1) queda el costo de antes, con solo la eficiencia de la bomba
+  cerca(D.costoMensual(p, r.hfBombeo).costo.costo, ((950 * 997.05 * 9.81 * r.Hmedia) / (0.7 * 3.6e6)) * 28123.2 + 150000, 1e-6);
   // Con bombeo continuo trabaja 24 h y el tanque se mantiene lleno
   const c = D.costoMensual({ ...p, controlBomba: 'continuo' }, r.hfBombeo);
   cerca(c.horasDia, 24, 1e-12);
@@ -143,14 +154,14 @@ test('Energía de ciclos completos = estimación mensual del costo', () => {
   let eventos = 0;
   for (let resto = 3 * ci.ciclo; resto > 1e-6; resto -= 600) {
     const s = D.avanzarTanque(p, st, Math.min(600, resto));
-    E += D.energiaTramo(p, s.tBomba, s.areaNivel, hf);
+    E += D.energiaTramo(p, s.tBomba, s.areaNivel, hf, 0.91);
     tBomba += s.tBomba;
     eventos += s.eventos.length;
     st = s;
   }
   cerca(tBomba, 3 * ci.tLlenado, 1e-3);
   assert.equal(eventos, 6);                         // tres paradas y tres arranques
-  cerca((E / (3 * ci.ciclo)) * 30 * 86400, D.costoMensual(p, hf).costo.energia, 1e-3);
+  cerca((E / (3 * ci.ciclo)) * 30 * 86400, D.costoMensual(p, hf, 0.91).costo.energia, 1e-3);
 });
 
 test('Tanque: los cambios de la bomba se registran con su instante exacto', () => {
