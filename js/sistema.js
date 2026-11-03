@@ -12,6 +12,7 @@ import * as D from './diseno.js';
 import * as R from './rio.js';
 import * as B from './bombas.js';
 import * as G from './riego.js';
+import * as A from './acuifero.js';
 
 export const PARAMETROS_DISENO = Object.freeze({
   // Control de la bomba por niveles
@@ -55,7 +56,9 @@ export const PARAMETROS_DISENO = Object.freeze({
   lluvia: 'normal',               // escenario que fija la cota del río y el sedimento
   sedimento: 150,                 // mg/L de sólidos en suspensión
   vertTipo: 'tratada', vertZona: 'media', Qvert: 20,   // L/s
-  sueloAcuifero: 'limo', tipoAcuifero: 'libre', profFreatico: 6,   // m
+  // Acuífero de la zona baja y pozo de una finca
+  sueloAcuifero: 'arena', tipoAcuifero: 'semiconfinado', profFreatico: 2,   // m
+  materialAcuifero: 'arena', espesorAcuifero: 20, distanciaPozo: 40, Qpozo: 5,   // m, m, L/s
   odMin: 4, cfMax: 2000,          // mg/L y NMP/100 mL (referencias de calidad)
   // Estaciones de bombeo: A = acueducto, R = riego
   bombaAnalisis: 'acueducto',
@@ -247,6 +250,9 @@ export function calcular(p, estado) {
     checksA: B.revisarBomba(bombaA, 'Bomba del acueducto'),
     checksR: B.revisarBomba(bombaR, 'Bomba de riego', { exigirReserva: false }),
   };
+  // Agua subterránea: nivel freático frente al río, pozo y calidad
+  const acuifero = A.calcularAcuifero(p, rio);
+
   // Toda la revisión del diseño, por componente (para el Excel y el conteo)
   const revisionTotal = [
     ...checks.map((c) => ({ ...c, area: 'Acueducto' })),
@@ -254,6 +260,7 @@ export function calcular(p, estado) {
     ...bombas.checksA.map((c) => ({ ...c, area: 'Bombas' })),
     ...bombas.checksR.map((c) => ({ ...c, area: 'Bombas' })),
     ...riego.checks.map((c) => ({ ...c, area: 'Riego' })),
+    ...acuifero.checks.map((c) => ({ ...c, area: 'Acuífero' })),
   ];
 
   return {
@@ -263,7 +270,7 @@ export function calcular(p, estado) {
     succion, aduccion, alturaBombeo: Hb, potencia, Vmes, costo, horasDia, ciclo, golpe,
     hfBombeo, Hmedia: mes.Hmedia, nivelMedio: mes.nivelMedio, potenciaMedia: mes.potencia, alcanza: mes.alcanza,
     potenciaElectrica: mes.potenciaElectrica, etaMotor: bombaA.motor.eta, capta: mes.capta,
-    rio, riego, bombas, revisionTotal,
+    rio, riego, bombas, acuifero, revisionTotal,
     distribucion: conduccion, conduccion, Hentrada, Hestatica,
     red, redDiseno, casa, grifo, Hnodo,
     Hcasa, presionCasa: M.mcaAkPa(Math.max(0, Hcasa)), vGrifo, qGrifo,

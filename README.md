@@ -4,9 +4,11 @@ Aplicación web interactiva que simula el abastecimiento de agua de un sector de
 
 La escena muestra el régimen del flujo: en las tuberías las partículas se mueven con el perfil de velocidad (parabólico en laminar, casi plano en turbulento) y un hilo de tinta sigue recto o se mezcla. La pestaña Tuberías incluye una animación del experimento de Reynolds con un tubo de vidrio cuyo diámetro y velocidad se pueden cambiar. La pestaña Datos guarda la información de la simulación en un libro de Excel.
 
-Además del acueducto, el simulador modela la cuenca: el río sube y se enturbia con las lluvias, un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos que siguen río abajo por las zonas alta, media y baja y llegan al acuífero, y en la zona rural un cultivo se riega con su propia tubería y su propia bomba. Las estaciones de bombeo se diseñan con su potencia hidráulica, al freno y eléctrica, el motor comercial que se instala y el tipo de bomba que conviene.
+Además del acueducto, el simulador modela la cuenca: el río sube y se enturbia con las lluvias, un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos que siguen río abajo por las zonas alta, media y baja y llegan al acuífero, y en la zona que se elija un cultivo se riega con su propia tubería y su propia bomba. Bajo la llanura, el agua subterránea se mueve entre el río y el pozo de una finca. Las estaciones de bombeo se diseñan con su potencia hidráulica, al freno y eléctrica, el motor comercial que se instala y el tipo de bomba que conviene.
 
-El panel tiene diez pestañas, en dos filas: Río, Captación, Bombas, Tuberías, Tanque, Red, Vivienda, Riego, Arroyo y Datos.
+La escena 3D va del nacimiento del río al mar y tiene cuatro vistas (Ciudad, Cuenca, Cultivo y Acuífero); al cambiar de pestaña, la cámara va sola a la vista que corresponde.
+
+El panel tiene once pestañas, en dos filas: Río, Captación, Bombas, Tuberías, Tanque, Red, Vivienda, Riego, Acuífero, Arroyo y Datos.
 
 Proyecto final de Álgebra y Geometría Analítica, 2026-II. Línea de investigación: Hidráulica de Canales Abiertos y Redes de Acueducto.
 
@@ -20,7 +22,8 @@ js/escena3d.js        Escena 3D con Three.js
 js/graficas.js        Gráficas con Chart.js
 js/diseno.js          Diseño: catálogo de tuberías, demanda horaria, control de la bomba, golpe de ariete, red ramificada, zanja y cantidades
 js/sistema.js         Une el modelo y el diseño en un solo cálculo del sistema, con la revisión de criterios
-js/rio.js             Río y cuenca: curva de descarga, sedimentos, vertimientos (mezcla y Streeter-Phelps) y acuífero (Darcy y GOD)
+js/rio.js             Río y cuenca: curva de descarga, sedimentos, vertimientos (mezcla y Streeter-Phelps), infiltración y vulnerabilidad GOD
+js/acuifero.js        Agua subterránea: capas, río que gana o pierde agua (Darcy), cono del pozo (Thiem y Sichardt), tiempo de viaje y calidad del pozo
 js/bombas.js          Estaciones de bombeo: potencias, motor comercial, tipos de bomba, curvas, punto de operación y NPSH
 js/riego.js           Riego: evapotranspiración (Hargreaves), cultivos, métodos de riego, caudal, tubería y comparación con la ciudad
 js/reynolds.js        Animación del experimento de Reynolds (laminar, transición, turbulento)
@@ -34,6 +37,7 @@ tests/excel.test.js   Pruebas del archivo de Excel (se descomprime con zlib y se
 tests/rio.test.js     Pruebas del río (Manning, captación, mezcla, Streeter-Phelps, sedimentos, acuífero)
 tests/bombas.test.js  Pruebas de las bombas (potencias, motor, curvas, paralelo, NPSH, tipos)
 tests/riego.test.js   Pruebas del riego (Hargreaves, caudal, épocas, métodos, zonas, calidad del agua)
+tests/acuifero.test.js Pruebas del agua subterránea (capas, Darcy, Thiem, tiempo de viaje, curva de llegada)
 ```
 
 Las librerías van incluidas en `lib/` y el Excel se genera con código propio, así que el simulador no depende de ningún CDN.
@@ -58,6 +62,9 @@ Las librerías van incluidas en `lib/` y el Excel se genera con código propio, 
 | Decimales | Potencias de la bomba P_h = ρgQH, P_b = P_h/η_b, P_e = P_b/η_m y velocidad específica n_q = n·√Q/H^0.75 | `disenarBomba`, `velocidadEspecifica` (en `bombas.js`) |
 | Ecuación cuadrática | Punto de operación: H₀ − a(Q/N)² = H_est + K·Q² | `puntoOperacion` (en `bombas.js`) |
 | Ecuación lineal | Caudal de riego Q = N_b·A·10/(horas·3600), lineal en el área | `necesidadRiego` (en `riego.js`) |
+| Ecuación lineal | Ley de Darcy: velocidad del agua subterránea v = K·i/n_e, con el gradiente i = Δh/L | `calcularAcuifero` (en `acuifero.js`) |
+| Función logarítmica | Cono de abatimiento de Thiem s(r) = Q/(2πT)·ln(R/r), con el radio de Sichardt R = 3000·s·√K | `conoAbatimiento`, `abatimientoEn` (en `acuifero.js`) |
+| Ecuación cuadrática | Tiempo de viaje del río al pozo t = π·b·n_e·L²/Q: a la mitad de la distancia, la cuarta parte del tiempo | `calcularAcuifero` (en `acuifero.js`) |
 
 Con caudales reales de acueducto el flujo es turbulento, de modo que la recta laminar subestima la pérdida; para la presión de la vivienda se usa Darcy-Weisbach (Swamee-Jain). Esa diferencia se muestra en la pestaña Tuberías. Con caudales muy pequeños (por ejemplo 0.1 L/s en la aducción) el flujo pasa a laminar y la escena lo muestra.
 
@@ -81,15 +88,32 @@ El consumo sigue una curva horaria con promedio igual al QMD y pico igual al QMH
 
 Dos interruptores de nivel controlan la bomba: se apaga al llegar al nivel de parada y vuelve a arrancar cuando el agua baja al nivel de arranque. `avanzarTanque` integra el nivel por tramos rectos y corta el paso justo en cada interruptor, así que el nivel dibuja un diente de sierra. `cicloBomba` da el tiempo encendida y apagada, las horas de bombeo al día y los arranques por hora. En la escena, una luz verde o roja en la bomba y dos flotadores en el tanque muestran el estado.
 
-## Río, vertimientos y acuífero (pestaña Río)
+## Río y vertimientos (pestaña Río)
 
 - **Nivel y caudal**: la cota de la lámina en la bocatoma da el caudal con la curva de Manning de un cauce de 10 m de ancho (6.35 m³/s en la cota base de 2.50 m). Los escenarios de lluvia (seca, normal, temporada de lluvias y aguacero) fijan la cota y el sedimento; los dos se pueden mover a mano. Si el río baja de la cota 1.75 m (0.15 m sobre el fondo de la rejilla), la bocatoma no capta y la bomba se detiene.
 - **Sedimento**: el que entra con el bombeo se reparte por tamaños; el desarenador retiene desde el grano que da la ley de Stokes y con eso se calcula cada cuántos días hay que limpiar la tolva.
 - **Zonas**: alta (montaña, 1 200 m, km 0 a 15), media (piedemonte, 400 m, km 15 a 35) y baja (llanura y ciudad, 20 m, km 35 a 50). Cada una tiene su caudal, su sección, su temperatura y su reaireación (O'Connor y Dobbins).
 - **Vertimiento**: aguas domésticas tratadas o sin tratar, aguas mieles del café o escorrentía agrícola, en la zona alta, media, baja (antes de la bocatoma) o después de la ciudad. Se mezcla por balance de masa y luego la DBO y los coliformes decaen y el oxígeno sigue la ecuación de Streeter-Phelps, paso a paso cada 100 m, con afluentes limpios en cada cambio de zona. El panel muestra el perfil del río coloreado por el oxígeno, la tabla de las tres zonas y las gráficas de oxígeno, DBO y coliformes (escala logarítmica).
-- **Acuífero**: el río de la zona baja lo recarga; el tiempo de llegada se calcula con Darcy (t = d·n_e/K), los coliformes mueren y se filtran en el suelo, los nitratos llegan completos y la vulnerabilidad se califica con el índice GOD.
+- **Hacia el acuífero**: el río de la zona baja lo recarga; el tiempo en llegar al nivel freático se calcula con Darcy (t = d·n_e/K), los coliformes mueren y se filtran en el suelo, los nitratos llegan completos y la vulnerabilidad se califica con el índice GOD. Lo que pasa después, bajo tierra, está en la pestaña Acuífero.
 
 Valores de referencia de calidad (editables): coliformes fecales ≤ 2 000 NMP/100 mL y nitratos ≤ 10 mg/L de N para potabilizar con tratamiento convencional, oxígeno disuelto ≥ 4 mg/L para la vida acuática y coliformes fecales ≤ 1 000 NMP/100 mL para regar lo que se come crudo (Decreto 1594 de 1984, compilado en el Decreto 1076 de 2015). La Resolución 0565 de 2026 del Ministerio de Ambiente fija nuevos criterios que rigen desde mayo de 2027.
+
+## Agua subterránea (pestaña Acuífero)
+
+Bajo la llanura hay suelo, una capa de arcilla si el acuífero es semiconfinado o confinado, el acuífero (grava, arena gruesa, arena media o arena fina y limosa, de 5 a 60 m de espesor) y la roca. Se eligen además la profundidad del agua, el caudal del pozo de una finca y su distancia al río.
+
+- **Río que gana o pierde agua**: si el río está más alto que el nivel freático le entrega agua al acuífero (río perdedor); si está más bajo, el acuífero lo alimenta (río ganador). El agua se mueve con la ley de Darcy, v = K·i/n_e.
+- **Pozo**: al bombear, el agua baja alrededor del pozo en un cono de abatimiento (Thiem, función logarítmica de la distancia) cuyo radio da la fórmula de Sichardt. Si el abatimiento pasa del 60 % del espesor, el pozo se seca.
+- **Del río al pozo**: si el cono alcanza el río, el pozo atrae su agua y el tiempo de viaje es t = π·b·n_e·L²/Q; la capa de arcilla agrega el tiempo de cruzarla. Se revisa que el viaje dure al menos 50 días, el tiempo de referencia para que mueran las bacterias. Los coliformes que llegan se calculan con su decaimiento y la filtración en el camino; los nitratos llegan completos.
+- **Gráficas**: el nivel del agua subterránea del río al pozo (con el cono) y la curva de llegada del agua del río al pozo (advección y dispersión), con la línea de los 50 días. El panel tiene además un corte del terreno con las capas, el nivel y el pozo.
+
+## La escena 3D: cuenca, cultivos y corte del terreno
+
+- **Cuatro vistas**, con botones sobre la escena: *Ciudad* (el acueducto, la red y el arroyo), *Cuenca* (el río del nacimiento al mar con las tres zonas, como en el perfil de la pestaña Río), *Cultivo* (el lote de la zona elegida, su bomba y su tubería) y *Acuífero* (el corte del frente de la escena). Al cambiar de pestaña, la cámara vuela sola a la vista que corresponde; si la persona mueve la cámara, el vuelo se detiene.
+- **La cuenca**: aguas arriba de la ciudad el río sube por el piedemonte hasta la montaña, entre laderas con bosque. Líneas blancas marcan dónde empiezan la zona media (km 15) y la baja (km 35). Las distancias horizontales están comprimidas.
+- **Color del río**: azul cuando está limpio, café con el sedimento de las lluvias y, desde el km del vertimiento, del color del agua residual según cuánta DBO y cuántos coliformes lleva en cada tramo; río abajo se aclara a medida que se degrada.
+- **Cultivos por zona**: en cada zona hay un lote con su cultivo típico (café en la montaña, cacao en el piedemonte y banano en la llanura). El de la zona elegida en la pestaña Riego muestra el cultivo del panel, el método de riego, la bomba en la orilla y la tubería que sube hasta el lote, a la altura del campo sobre el río de esa zona. En la montaña y el piedemonte las hileras van en curvas de nivel.
+- **Corte del terreno**: el frente de la escena está cortado como una maqueta y muestra las capas, el nivel freático (a trazos si es piezométrico), el pozo con su filtro, el agua adentro y la bomba sumergible, flechas y gotas que se mueven con el flujo subterráneo y, si el río va contaminado, la mancha de su agua dentro del acuífero hasta donde llega en 50 días.
 
 ## Estaciones de bombeo (pestaña Bombas)
 
@@ -101,7 +125,7 @@ Se diseña la estación del acueducto (río → tanque, con la altura media del 
 - curva de N bombas en paralelo H = H₀ − a(Q/N)² y curva del sistema H = H_est + K·Q²: el punto de operación es su intersección;
 - NPSH disponible (presión atmosférica de la altitud, presión de vapor con la temperatura del agua, altura y pérdida de la succión) contra el requerido, para revisar la cavitación.
 
-## Riego de la zona rural (pestaña Riego)
+## Riego en la cuenca (pestaña Riego)
 
 ET₀ de Hargreaves con el clima de cada zona, ET_c = K_c·ET₀ (K_c de la FAO-56), necesidad neta restando la lluvia efectiva y bruta dividiendo por la eficiencia del método (inundación, surcos, aspersión, pivote central, microaspersión o goteo). El caudal de diseño sale de la época seca: Q = N_b·A·10/(horas·3600). La tubería y la bomba de riego se diseñan con ese caudal y una altura igual al desnivel hasta el lote más la presión del emisor más las pérdidas. Tres tablas comparan el cultivo en las tres zonas, los seis métodos y qué cultivos se dan en cada zona; el panel compara el agua del riego con el consumo de la ciudad (porcentaje y número de viviendas equivalentes) y revisa la calidad del agua en la toma: un vertimiento aguas arriba puede dejarla sin servir para hortalizas.
 
@@ -127,7 +151,7 @@ Mientras corre el reloj se guarda una fila cada 15 minutos de tiempo simulado (s
 | Serie de tiempo | Una fila por intervalo: nivel, bomba, consumo, altura, potencia, presiones, energía y costo acumulados, uso del canal |
 | Arranques y paradas | Cada cambio de la bomba con su hora, el nivel y la duración del tramo anterior |
 | Ciclo y costo | El ciclo de la bomba y el costo mensual con fórmulas de Excel (incluida la eficiencia del motor): si se cambia un dato de entrada (en azul), Excel recalcula |
-| Revisión del diseño | Los criterios de diseño del acueducto, el río, las bombas y el riego, con su resultado |
+| Revisión del diseño | Los criterios de diseño del acueducto, el río, las bombas, el riego y el acuífero, con su resultado |
 | Cantidades de obra | Tuberías, accesorios, excavación y cama de apoyo de la red |
 | Perfil del río | Oxígeno disuelto, saturación, déficit, DBO, coliformes y nitratos cada 0.5 km, con el vertimiento, la bocatoma y la toma de riego marcados |
 
@@ -180,9 +204,9 @@ y abrir `http://localhost:8000`. Para correr las pruebas (requiere Node.js 18 o 
 npm test
 ```
 
-Son 64 pruebas: 21 del modelo base, 17 del diseño, 5 del archivo de Excel, 9 del río, 6 de las bombas y 6 del riego.
+Son 70 pruebas: 21 del modelo base, 17 del diseño, 5 del archivo de Excel, 9 del río, 6 de las bombas, 6 del riego y 6 del acuífero.
 
 
 ## Valores de referencia
 
-La tarifa de energía (950 COP/kWh), el cargo fijo, la presión mínima de servicio (15 m.c.a.), la presión estática máxima (60 m.c.a.), los factores k1 y k2, la dotación, las pérdidas técnicas, los límites de velocidad y las dimensiones del catálogo de tuberías son valores editables de referencia. También lo son los del río y el riego: la sección del cauce, las constantes de la DBO y de los coliformes, las concentraciones típicas de cada vertimiento, los suelos del acuífero, los campos de aplicación de las bombas, las eficiencias de los motores, los K_c de los cultivos y el clima de cada zona. Antes de la sustentación conviene contrastarlos con la tarifa vigente del operador de energía, con el Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017), con las normas de calidad del agua vigentes y con los catálogos de los fabricantes.
+La tarifa de energía (950 COP/kWh), el cargo fijo, la presión mínima de servicio (15 m.c.a.), la presión estática máxima (60 m.c.a.), los factores k1 y k2, la dotación, las pérdidas técnicas, los límites de velocidad y las dimensiones del catálogo de tuberías son valores editables de referencia. También lo son los del río y el riego: la sección del cauce, las constantes de la DBO y de los coliformes, las concentraciones típicas de cada vertimiento, los suelos y materiales del acuífero, los campos de aplicación de las bombas, las eficiencias de los motores, los K_c de los cultivos y el clima de cada zona. Antes de la sustentación conviene contrastarlos con la tarifa vigente del operador de energía, con el Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017), con las normas de calidad del agua vigentes y con los catálogos de los fabricantes.

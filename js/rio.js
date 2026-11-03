@@ -395,11 +395,6 @@ export function calcularRio(p, sed = null) {
     revisar(checks, `Sedimento que pasa al tanque ${entero(sed.Cpasa)} ≤ 500 mg/L`, sed.Cpasa <= 500,
       'El limo y la arcilla no se asientan en el desarenador; durante un aguacero conviene suspender la captación.', 'aviso');
   }
-  revisar(checks, `Acuífero: nitratos que llegan ${f2(acu.NO3)} ≤ 10 mg/L de N`, acu.NO3 <= 10,
-    'Los nitratos no se degradan en el suelo: tarde o temprano llegan al agua subterránea.');
-  revisar(checks, `Acuífero: coliformes que llegan ${acu.CF < 1 ? f2(acu.CF) : entero(acu.CF)} ≤ 1 NMP/100 mL`, acu.CF <= 1,
-    'El agua de un pozo en esta zona necesitaría desinfección.', 'aviso');
-  revisar(checks, `Acuífero: vulnerabilidad GOD ${f2(acu.god)} (${acu.clase}) < 0.5`, acu.god < 0.5,
-    'Acuífero muy vulnerable: hay que proteger su zona de recarga de los vertimientos.', 'aviso');
+  // La revisión del acuífero (infiltración, GOD y pozo) está en acuifero.js
   return { boc, capta, lamina, calidad, recarga, acu, sed, checks };
 }

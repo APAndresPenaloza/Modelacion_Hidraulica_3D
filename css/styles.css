@@ -195,6 +195,42 @@ body {
 .muestra-piezo { border-top: 2px dashed var(--piezo); margin-left: 8px; }
 .sin-webgl { top: 50%; transform: translateY(-50%); right: 12px; font-size: 14px; }
 
+/* Botones de vista de la escena (arriba a la derecha) */
+.vistas {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 3;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  border: 1px solid var(--linea);
+  border-radius: 999px;
+  box-shadow: 0 1px 3px rgba(18, 48, 59, .16);
+}
+.vistas[hidden] { display: none; }
+.vistas button {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1;
+  min-height: 28px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--tinta-2);
+  cursor: pointer;
+}
+.vistas button:hover { color: var(--tinta); background: color-mix(in srgb, var(--agua) 14%, transparent); }
+.vistas button[aria-pressed="true"] { background: var(--agua); color: var(--sobre-agua); }
+.vistas button:focus-visible { outline: 2px solid var(--agua); outline-offset: 1px; }
+.etiqueta3d.zona { border-left-color: var(--ocre); }
+@media (max-width: 1180px) {
+  .ayuda { top: 54px; }
+}
+
 /* Etiquetas sobre la escena 3D */
 .etiqueta3d {
   pointer-events: auto;
@@ -233,7 +269,7 @@ body {
 .pestanas {
   position: sticky; top: 0; z-index: 2;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);   /* diez pestañas en dos filas de cinco */
+  grid-template-columns: repeat(6, 1fr);   /* once pestañas en dos filas */
   padding: 0 4px;
   flex-shrink: 0;   /* con overflow, un hijo de flex se podría encoger hasta 0 */
   overflow-x: auto;
@@ -484,6 +520,12 @@ input[type="range"]::-moz-range-thumb {
   .panel { border-left: 0; border-top: 1px solid var(--linea); overflow: visible; }
   .ayuda { max-width: calc(100% - 24px); }
   .leyenda .nota { display: none; }
+}
+
+@media (max-width: 700px) {
+  .ayuda { top: 54px; }
+  .vistas { right: 50%; transform: translateX(50%); }
+  .vistas button { font-size: 12px; padding: 7px 10px; min-height: 32px; }
 }
 
 @media (max-width: 560px) {

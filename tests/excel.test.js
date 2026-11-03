@@ -142,7 +142,7 @@ test('Libro de la simulación: hojas, escenarios y fórmulas del ciclo', () => {
   // La revisión (acueducto, río, bombas y riego) y las cantidades pasan completas
   assert.equal(hojas[5].filas.length, 4 + r.revisionTotal.length);
   assert.ok(r.revisionTotal.length > r.checks.length);
-  assert.deepEqual([...new Set(hojas[5].filas.slice(4).map((f) => f[0]))], ['Acueducto', 'Río', 'Bombas', 'Riego']);
+  assert.deepEqual([...new Set(hojas[5].filas.slice(4).map((f) => f[0]))], ['Acueducto', 'Río', 'Bombas', 'Riego', 'Acuífero']);
   assert.equal(hojas[6].filas.length, 4 + r.cantidades.filas.length);
   // Perfil del río: una fila cada 0.5 km del km 0 al 50, con la bocatoma marcada
   assert.equal(hojas[7].filas.length, 4 + 101);

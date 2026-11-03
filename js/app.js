@@ -8,6 +8,7 @@ import * as S from './sistema.js';
 import * as R from './rio.js';
 import * as B from './bombas.js';
 import * as G from './riego.js';
+import * as A from './acuifero.js';
 import { Escena } from './escena3d.js';
 import { crearGrafica, actualizarGrafica, serieLinea, seriePuntos, paleta } from './graficas.js';
 import { ExperimentoReynolds } from './reynolds.js';
@@ -54,14 +55,15 @@ const lps = M.lpsAm3s;
 
 // ── Definición de pestañas y controles ─────────────────────────────────────
 const TABS = [
-  { id: 'rio', nombre: 'Río', extra: true, revision: true, tablas: true, perfil: true, intro: 'El río baja de la Sierra Nevada por tres zonas: alta (montaña), media (piedemonte) y baja (llanura y ciudad). Las lluvias suben su nivel y le traen sedimento; un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos, que siguen río abajo y pueden llegar al acuífero. Aquí se fijan el nivel del río, el sedimento, el vertimiento y el suelo sobre el acuífero.' },
+  { id: 'rio', nombre: 'Río', extra: true, revision: true, tablas: true, perfil: true, intro: 'El río baja de la Sierra Nevada por tres zonas: alta (montaña), media (piedemonte) y baja (llanura y ciudad). Las lluvias suben su nivel y le traen sedimento; un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos, que siguen río abajo y pueden pasar al agua subterránea (pestaña Acuífero). Aquí se fijan el nivel del río, el sedimento y el vertimiento. Con la vista Cuenca se recorre el río de la montaña al mar.' },
   { id: 'captacion', nombre: 'Captación', extra: true, intro: 'El agua del río entra por la rejilla de la bocatoma, deja la arena en el desarenador y pasa al pozo de succión, de donde la bomba la eleva hasta el tanque. Aquí se fija cuánto se bombea, el tamaño del desarenador y cuánto cuesta la energía.' },
   { id: 'bombas', nombre: 'Bombas', extra: true, revision: true, tablas: true, intro: 'Cada estación de bombeo se diseña con su caudal y su altura dinámica. De ahí salen la potencia hidráulica (la útil), la potencia al freno (en el eje), la potencia eléctrica real que se paga y el motor comercial que se instala, que es la capacidad. La tabla compara los tipos de bomba para ese punto de diseño; las curvas muestran dónde trabaja la bomba, y el NPSH, si cavita.' },
   { id: 'tuberias', nombre: 'Tuberías', experimento: true, intro: 'La aducción lleva el agua cruda del río al tanque, impulsada por la bomba; la conducción la baja del tanque hasta la entrada del barrio, donde empieza la red de distribución. Cada tubería se elige del catálogo por material, clase de presión y diámetro comercial: el diámetro interno fija la velocidad y el régimen del flujo, y el material, la rugosidad (o el coeficiente C de Hazen-Williams) y la presión que aguanta.' },
   { id: 'tanque', nombre: 'Tanque', extra: true, intro: 'El tanque compensa la diferencia entre lo que entra por bombeo y lo que consume el sector. Dos interruptores de nivel controlan la bomba: se apaga cuando el agua llega al nivel de parada y vuelve a arrancar cuando baja al nivel de arranque. El consumo cambia a lo largo del día: cuando es menor que el caudal máximo diario el tanque sube, y en las horas pico baja.' },
   { id: 'red', nombre: 'Red', red: true, intro: 'La red de distribución reparte el agua en el barrio: una tubería principal, ramales que salen de ella con su válvula de compuerta, y en cada vivienda una acometida con abrazadera de toma, tubería de servicio, llave de paso y medidor. La conducción abastece todo el sector (QMD del tanque); aquí se diseña un barrio de ese sector. Diseña la red con los controles, mira las presiones en el plano y toca una vivienda para analizarla.' },
   { id: 'vivienda', nombre: 'Vivienda', intro: 'La presión en la casa es la altura del agua en el tanque menos lo que se pierde en la conducción, en la red y en la acometida (tubería de servicio, medidor y llave de paso). Con lo que queda sale el chorro del grifo.' },
-  { id: 'riego', nombre: 'Riego', revision: true, tablas: true, intro: 'En la zona rural el agua del río se bombea por una tubería hasta los cultivos. Cuánta agua hace falta depende del clima de la zona (alta, media o baja), del cultivo y del método de riego; con eso se diseñan la tubería y la bomba de riego, y se compara con lo que consume la ciudad.' },
+  { id: 'riego', nombre: 'Riego', revision: true, tablas: true, intro: 'En la zona que se elija (alta, media o baja) el agua del río se bombea por una tubería hasta el cultivo; en la escena, el lote aparece en esa zona y a su altura sobre el río. Cuánta agua hace falta depende del clima de la zona, del cultivo y del método de riego; con eso se diseñan la tubería y la bomba de riego, y se compara con lo que consume la ciudad.' },
+  { id: 'acuifero', nombre: 'Acuífero', extra: true, revision: true, corte: true, intro: 'Bajo la llanura hay agua subterránea: llena los poros de una capa de arena o grava (el acuífero) y se mueve muy despacio. Según el nivel del río, el río le entrega agua al acuífero o el acuífero alimenta al río. Un pozo que bombea baja el nivel a su alrededor (cono de abatimiento) y, si el cono alcanza el río, atrae su agua: con ella pueden llegar los contaminantes. Aquí se eligen las capas del terreno y el pozo; en la escena, la vista Acuífero muestra el corte del terreno con el agua subterránea en movimiento.' },
   { id: 'arroyo', nombre: 'Arroyo', intro: 'Con los aguaceros los arroyos de la ciudad crecen de golpe. El canal trapezoidal, excavado por debajo de la calle, tiene que conducir la crecida sin desbordarse.' },
   { id: 'datos', nombre: 'Datos', datos: true, intro: 'Guarda la información de la simulación en un libro de Excel: los parámetros y resultados, la serie de tiempo que se registra mientras corre el reloj, los arranques y paradas de la bomba, la revisión del diseño, las cantidades de obra y los escenarios que guardes para compararlos.' },
 ];
@@ -125,12 +127,6 @@ const CONTROLES = [
     tab: 'rio', id: 'Qvert', clave: 'Qvert', etiqueta: 'Caudal del vertimiento', unidad: 'L/s', min: 0.5, max: 500, paso: 0.5, dec: 1, visible: () => !sinVertimiento(),
     extra: () => { const v = R.VERTIMIENTOS[p.vertTipo]; return `DBO ${R.miles(v.DBO)} mg/L · coliformes fecales ${R.miles(v.CF)} NMP/100 mL · nitratos ${fmt(v.NO3, 0)} mg/L de N · oxígeno ${fmt(v.OD, 0)} mg/L`; },
   },
-  { tab: 'rio', grupo: 'Acuífero de la zona baja' },
-  { tab: 'rio', id: 'sueloAcuifero', clave: 'sueloAcuifero', etiqueta: 'Suelo sobre el acuífero', tipo: 'opciones',
-    opciones: Object.entries(R.SUELOS).map(([valor, x]) => ({ valor, nombre: `${x.nombre} (K = ${x.K} m/día)` })) },
-  { tab: 'rio', id: 'tipoAcuifero', clave: 'tipoAcuifero', etiqueta: 'Tipo de acuífero', tipo: 'opciones',
-    opciones: Object.entries(R.ACUIFEROS).map(([valor, a]) => ({ valor, nombre: a.nombre })) },
-  { tab: 'rio', id: 'profFreatico', clave: 'profFreatico', etiqueta: 'Profundidad del agua subterránea', unidad: 'm', min: 0.5, max: 60, paso: 0.5, dec: 1 },
   { tab: 'rio', grupo: 'Criterios de calidad (referencia)' },
   { tab: 'rio', id: 'odMin', clave: 'odMin', etiqueta: 'Oxígeno disuelto mínimo (vida acuática)', unidad: 'mg/L', min: 2, max: 8, paso: 0.1, dec: 1 },
   { tab: 'rio', id: 'cfMax', clave: 'cfMax', etiqueta: 'Coliformes fecales máximos para potabilizar', unidad: 'NMP/100 mL', min: 100, max: 20000, paso: 100, dec: 0 },
@@ -291,6 +287,27 @@ const CONTROLES = [
   { tab: 'riego', id: 'Lriego', clave: 'Lriego', etiqueta: 'Longitud de la tubería', unidad: 'm', min: 50, max: 3000, paso: 10, dec: 0 },
   { tab: 'riego', id: 'eficienciaR2', clave: 'eficienciaR', etiqueta: 'Eficiencia de la bomba de riego', unidad: '%', min: 40, max: 90, paso: 1, dec: 0, aUI: (v) => v * 100, deUI: (v) => v / 100 },
 
+  { tab: 'acuifero', grupo: 'Capas del terreno' },
+  { tab: 'acuifero', id: 'sueloAcuifero', clave: 'sueloAcuifero', etiqueta: 'Suelo sobre el agua subterránea', tipo: 'opciones',
+    opciones: Object.entries(R.SUELOS).map(([valor, x]) => ({ valor, nombre: `${x.nombre} (K = ${x.K} m/día)` })) },
+  { tab: 'acuifero', id: 'tipoAcuifero', clave: 'tipoAcuifero', etiqueta: 'Tipo de acuífero', tipo: 'opciones',
+    opciones: Object.entries(R.ACUIFEROS).map(([valor, a]) => ({ valor, nombre: a.capa ? `${a.nombre}: arcilla de ${a.capa.espesor} m encima` : `${a.nombre}: sin capa de arcilla` })) },
+  {
+    tab: 'acuifero', id: 'profFreatico', clave: 'profFreatico', etiqueta: 'Profundidad del agua subterránea', unidad: 'm', min: 0.5, max: 30, paso: 0.1, dec: 1,
+    extra: (d) => {
+      const nivel = A.COTA_LLANURA - d;
+      const dif = p.cotaRio - nivel;
+      return `Nivel a la cota ${fmt(nivel)} m: ${Math.abs(dif) < 0.05 ? 'igual que el río' : `${fmt(Math.abs(dif))} m ${dif > 0 ? 'por debajo' : 'por encima'} del río (cota ${fmt(p.cotaRio)} m)`}`;
+    },
+  },
+  { tab: 'acuifero', id: 'materialAcuifero', clave: 'materialAcuifero', etiqueta: 'Material del acuífero', tipo: 'opciones',
+    opciones: Object.entries(A.MATERIALES_ACUIFERO).map(([valor, x]) => ({ valor, nombre: `${x.nombre} (K = ${x.K} m/día)` })) },
+  { tab: 'acuifero', id: 'espesorAcuifero', clave: 'espesorAcuifero', etiqueta: 'Espesor del acuífero', unidad: 'm', min: 5, max: 60, paso: 1, dec: 0 },
+  { tab: 'acuifero', grupo: 'Pozo de una finca' },
+  { tab: 'acuifero', id: 'Qpozo', clave: 'Qpozo', etiqueta: 'Caudal que bombea el pozo', unidad: 'L/s', min: 0, max: 30, paso: 0.5, dec: 1,
+    extra: (q) => (q > 0 ? `Equivale al consumo de ${R.miles((q / 1000) / (r.qMedCasa * p.k1))} viviendas` : 'Pozo sin bombear') },
+  { tab: 'acuifero', id: 'distanciaPozo', clave: 'distanciaPozo', etiqueta: 'Distancia del pozo al río', unidad: 'm', min: 5, max: 500, paso: 1, dec: 0 },
+
   { tab: 'arroyo', grupo: 'Sección del canal' },
   { tab: 'arroyo', id: 'perimetro', clave: 'perimetro', etiqueta: 'Perímetro mojado disponible (P)', unidad: 'm', min: 2, max: 12, paso: 0.05, dec: 2 },
   { tab: 'arroyo', id: 'anchoCanal', clave: 'anchoCanal', etiqueta: 'Ancho del fondo (b)', unidad: 'm', min: 0.2, max: () => p.perimetro - 0.2, paso: 0.05, dec: 2 },
@@ -351,6 +368,7 @@ function crearPanel() {
     f.innerHTML = `
       <p class="intro">${t.intro}</p>
       ${t.red ? `<figure class="plano"><div class="svg-plano" role="img" aria-label="Plano de la red de distribución"></div><figcaption>Plano esquemático (sin escala). El color de cada vivienda es su presión en la hora pico con el tanque en el nivel de arranque: verde cumple, ocre está cerca del mínimo y rojo no cumple. Toca una vivienda para analizarla.</figcaption></figure>` : ''}
+      ${t.corte ? `<figure class="plano corte-acuifero"><div class="svg-plano svg-corte" role="img" aria-label="Corte del terreno entre el río y el pozo"></div><figcaption>Corte esquemático del terreno desde el río hasta más allá del pozo (alturas exageradas). Las flechas muestran hacia dónde se mueve el agua subterránea.</figcaption></figure>` : ''}
       ${t.perfil ? `<figure class="plano perfil-rio"><div class="svg-plano svg-perfil" role="img" aria-label="Perfil del río por zonas con la calidad del agua"></div><figcaption>Perfil del cauce desde el nacimiento hasta el mar (sin escala horizontal; alturas exageradas). El color del río es el oxígeno disuelto y la franja de abajo, los coliformes fecales.</figcaption></figure>` : ''}
       <div class="controles"></div>
       <h3>Resultados</h3>
@@ -376,7 +394,8 @@ function crearPanel() {
     const exp = f.querySelector('.experimento');
     fichas[t.id] = {
       raiz: f,
-      plano: f.querySelector('.svg-plano:not(.svg-perfil)'),
+      plano: f.querySelector('.svg-plano:not(.svg-perfil):not(.svg-corte)'),
+      corte: f.querySelector('.svg-corte'),
       perfil: f.querySelector('.svg-perfil'),
       tablas: f.querySelector('.tablas'),
       revision: f.querySelector('.revision'),
@@ -908,6 +927,138 @@ function tablaZonasRio() {
   });
 }
 
+// ── Acuífero: corte esquemático del terreno entre el río y el pozo ───────────
+// El río se dibuja a la izquierda: su orilla este es x = 0 y el pozo está en x = L.
+const RIO_CORTE = { centro: -8, semiancho: 5, talud: 3 };
+
+/** Cota del terreno [m] a la distancia x [m] de la orilla este (negativa: río y orilla oeste). */
+function terrenoCorte(x) {
+  const c = RIO_CORTE;
+  const d = Math.abs(x - c.centro);
+  const lecho = R.CAUCE.fondo;
+  if (d <= c.semiancho) return lecho;
+  if (d <= c.semiancho + c.talud) return lecho + ((A.COTA_LLANURA - lecho) * (d - c.semiancho)) / c.talud;
+  return A.COTA_LLANURA;
+}
+
+/** Nivel del agua subterránea [m] en el corte: el del río bajo el cauce, con el pozo al este. */
+function nivelCorte(a, x) {
+  const orillaOeste = RIO_CORTE.centro - RIO_CORTE.semiancho - RIO_CORTE.talud;
+  if (x >= 0) return A.nivelConPozo(a, x);
+  if (x <= orillaOeste) return A.nivelNatural(a, orillaOeste - x);
+  return a.hRio;
+}
+
+function corteAcuifero() {
+  const a = r.acuifero;
+  const est = a.est;
+  const W = 360;
+  const H = 232;
+  const x0 = 10;
+  const x1 = W - 10;
+  const yT = 30;
+  const yB = H - 26;
+  const xMin = -20;
+  const xMax = Math.max(100, Math.min(600, Math.ceil((Math.max(2.3 * a.L, a.L + 30)) / 10) * 10));
+  // Escala vertical en dos tramos: la parte de arriba (río, suelo, arcilla y cono del
+  // pozo) se ve más grande que la profundidad del acuífero
+  const cTop = A.COTA_LLANURA + 2.5;
+  const cBot = est.fondo - 3;
+  const cMed = Math.max(cBot + 2, Math.min(est.techoAcuifero, Math.max(est.fondo, a.nivelPozo), R.CAUCE.fondo) - 2.5);
+  const hArriba = 0.62 * (yB - yT);
+  const X = (x) => x0 + ((x - xMin) / (xMax - xMin)) * (x1 - x0);
+  const Y = (c) => {
+    const k = Math.max(cBot, Math.min(cTop, c));
+    return k >= cMed ? yT + ((cTop - k) / (cTop - cMed)) * hArriba : yT + hArriba + ((cMed - k) / (cMed - cBot)) * (yB - yT - hArriba);
+  };
+  const pasos = 120;
+  const xs = Array.from({ length: pasos + 1 }, (_, k) => xMin + ((xMax - xMin) * k) / pasos);
+  const linea = (f) => xs.map((x) => `${X(x).toFixed(1)},${Y(f(x)).toFixed(1)}`).join(' L');
+  const nivel = (x) => Math.max(est.fondo, nivelCorte(a, x));
+  const libre = !est.tipo.capa;
+  const suelo = R.SUELOS[p.sueloAcuifero] ?? R.SUELOS.arena;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" class="svg-red">
+    <defs>
+      <pattern id="pt-suelo" width="7" height="7" patternUnits="userSpaceOnUse"><rect width="7" height="7" style="fill:color-mix(in srgb, var(--ocre) 30%, var(--panel))"/><circle cx="2" cy="2" r="0.8" style="fill:color-mix(in srgb, var(--ocre) 70%, var(--panel))"/><circle cx="5.5" cy="5" r="0.6" style="fill:color-mix(in srgb, var(--ocre) 60%, var(--panel))"/></pattern>
+      <pattern id="pt-acuifero" width="8" height="8" patternUnits="userSpaceOnUse"><rect width="8" height="8" style="fill:color-mix(in srgb, var(--agua) 30%, var(--panel))"/><circle cx="2" cy="3" r="1.1" style="fill:color-mix(in srgb, var(--agua) 12%, var(--ocre) 40%)"/><circle cx="6" cy="6.5" r="0.9" style="fill:color-mix(in srgb, var(--agua) 12%, var(--ocre) 40%)"/></pattern>
+      <pattern id="pt-arcilla" width="10" height="5" patternUnits="userSpaceOnUse"><rect width="10" height="5" style="fill:color-mix(in srgb, var(--tinta-2) 35%, var(--panel))"/><path d="M0 2.5 H6" style="stroke:color-mix(in srgb, var(--tinta-2) 65%, var(--panel))" stroke-width="0.8"/></pattern>
+      <pattern id="pt-roca" width="12" height="9" patternUnits="userSpaceOnUse"><rect width="12" height="9" style="fill:color-mix(in srgb, var(--tinta-2) 55%, var(--panel))"/><path d="M0 4.5 H12 M6 0 V4.5 M0 9 V4.5 M12 9 V4.5" style="stroke:color-mix(in srgb, var(--tinta) 35%, var(--panel))" stroke-width="0.6"/></pattern>
+      <marker id="mk-flecha" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L6 3 L0 6 z" style="fill:var(--agua)"/></marker>
+    </defs>`;
+  const xa = X(xMin);
+  const xb = X(xMax);
+  // Roca bajo el acuífero
+  svg += `<rect x="${xa}" y="${Y(est.fondo)}" width="${xb - xa}" height="${yB - Y(est.fondo)}" fill="url(#pt-roca)"/>`;
+  if (libre) {
+    // Acuífero libre: saturado bajo el nivel freático, suelo seco encima
+    svg += `<path d="M${xa},${Y(est.fondo)} L${linea(nivel)} L${xb},${Y(est.fondo)} Z" fill="url(#pt-acuifero)"/>`;
+    svg += `<path d="M${linea(terrenoCorte)} L${linea(nivel).split(' L').reverse().join(' L')} Z" fill="url(#pt-suelo)"/>`;
+  } else {
+    svg += `<rect x="${xa}" y="${Y(est.techoAcuifero)}" width="${xb - xa}" height="${Y(est.fondo) - Y(est.techoAcuifero)}" fill="url(#pt-acuifero)"/>`;
+    svg += `<rect x="${xa}" y="${Y(est.nivel)}" width="${xb - xa}" height="${Y(est.techoAcuifero) - Y(est.nivel)}" fill="url(#pt-arcilla)"/>`;
+    svg += `<path d="M${linea(terrenoCorte)} L${xb},${Y(est.nivel)} L${xa},${Y(est.nivel)} Z" fill="url(#pt-suelo)"/>`;
+  }
+  // Cauce con el agua del río
+  const cc = RIO_CORTE;
+  const xr0 = X(cc.centro - cc.semiancho - cc.talud);
+  const xr1 = X(cc.centro + cc.semiancho + cc.talud);
+  const lechoY = Y(R.CAUCE.fondo);
+  const rioY = Y(p.cotaRio);
+  const xsRio = xs.filter((x) => x > cc.centro - cc.semiancho - cc.talud && x < cc.centro + cc.semiancho + cc.talud && terrenoCorte(x) < p.cotaRio);
+  if (xsRio.length) {
+    svg += `<path d="M${X(xsRio[0])},${rioY} ${xsRio.map((x) => `L${X(x).toFixed(1)},${Y(terrenoCorte(x)).toFixed(1)}`).join(' ')} L${X(xsRio[xsRio.length - 1])},${rioY} Z" style="fill:var(--agua)" opacity="0.75"/>`;
+  }
+  // Terreno (línea), nivel natural (punteado) y nivel con el pozo
+  svg += `<path d="M${linea(terrenoCorte)}" fill="none" style="stroke:var(--tinta-2)" stroke-width="1.2"/>`;
+  svg += `<path d="M${linea((x) => (x < 0 ? nivelCorte(a, x) : A.nivelNatural(a, x)))}" fill="none" style="stroke:var(--agua)" stroke-width="1" stroke-dasharray="3 3" opacity="0.8"/>`;
+  svg += `<path d="M${linea(nivel)}" fill="none" style="stroke:var(--agua)" stroke-width="2.2"/>`;
+  // Flechas del flujo subterráneo
+  const cMedia = libre ? (est.nivel + est.fondo) / 2 : (est.techoAcuifero + est.fondo) / 2;
+  const flecha = (xA, xB, c) => `<line x1="${X(xA)}" y1="${Y(c)}" x2="${X(xB)}" y2="${Y(c)}" style="stroke:var(--agua)" stroke-width="1.6" marker-end="url(#mk-flecha)"/>`;
+  const conPozo = a.Q > 0;
+  if (a.via !== 'ninguna') {
+    for (const f of [0.15, 0.55]) svg += flecha(f * a.L, (f + 0.28) * a.L, cMedia);
+    svg += `<line x1="${X(cc.centro)}" y1="${lechoY + 3}" x2="${X(cc.centro)}" y2="${Y(cMedia) - 4}" style="stroke:var(--agua)" stroke-width="1.6" marker-end="url(#mk-flecha)"/>`;
+  } else {
+    for (const f of [0.6, 0.2]) svg += flecha(f * a.L + 10, f * a.L - 8, cMedia);
+  }
+  if (conPozo && a.cono.R > 5) {
+    const xEnd = Math.min(xMax - 4, a.L + Math.min(a.cono.R, xMax) * 0.8);
+    if (xEnd > a.L + 8) svg += flecha(xEnd, a.L + 6, cMedia);
+  }
+  // Pozo: tubería, agua adentro y bomba
+  const xp = X(a.L);
+  const fondoPozo = Y(est.fondo + 0.8);
+  const aguaPozo = Y(Math.max(est.fondo + 1, a.nivelPozo));
+  svg += `<rect x="${xp - 3.5}" y="${Y(A.COTA_LLANURA) - 7}" width="7" height="${fondoPozo - Y(A.COTA_LLANURA) + 7}" style="fill:var(--panel);stroke:var(--tinta)" stroke-width="1"/>`;
+  svg += `<rect x="${xp - 2.5}" y="${aguaPozo}" width="5" height="${Math.max(0, fondoPozo - aguaPozo)}" style="fill:var(--agua)"/>`;
+  if (conPozo) svg += `<rect x="${xp - 2.5}" y="${fondoPozo - 9}" width="5" height="7" style="fill:var(--tinta)"/>`;
+  svg += `<rect x="${xp - 7}" y="${Y(A.COTA_LLANURA) - 13}" width="14" height="6" rx="1" style="fill:var(--tinta-2)"/>`;
+  // Cotas y rótulos
+  const yL = yT - 14;
+  svg += `<line x1="${X(0)}" y1="${yL}" x2="${xp}" y2="${yL}" style="stroke:var(--tinta-2)" stroke-width="0.8"/>`;
+  svg += `<line x1="${X(0)}" y1="${yL - 3}" x2="${X(0)}" y2="${yL + 3}" style="stroke:var(--tinta-2)" stroke-width="0.8"/><line x1="${xp}" y1="${yL - 3}" x2="${xp}" y2="${yL + 3}" style="stroke:var(--tinta-2)" stroke-width="0.8"/>`;
+  svg += `<text x="${(X(0) + xp) / 2}" y="${yL - 4}" text-anchor="middle" class="t-chica">L = ${fmt(a.L, 0)} m</text>`;
+  svg += `<text x="${X(cc.centro)}" y="${rioY - 5}" text-anchor="middle" class="t-chica t-sel t-halo">Río</text>`;
+  svg += `<text x="${xp}" y="${Y(A.COTA_LLANURA) - 16}" text-anchor="middle" class="t-chica t-sel t-halo">Pozo · ${fmt(p.Qpozo, 1)} L/s</text>`;
+  const xTxt = X(xMax) - 4;
+  svg += `<text x="${xTxt}" y="${Math.max(Y(A.COTA_LLANURA) + 10, Y((A.COTA_LLANURA + est.nivel) / 2) + 3)}" text-anchor="end" class="t-chica t-halo">${libre ? 'Zona no saturada' : 'Suelo'}: ${suelo.nombre.toLowerCase()}</text>`;
+  if (!libre) svg += `<text x="${xTxt}" y="${Y((est.nivel + est.techoAcuifero) / 2) + 3}" text-anchor="end" class="t-chica t-halo">Arcilla, ${fmt(est.e, 0)} m</text>`;
+  svg += `<text x="${xTxt}" y="${Y(cMedia) + 3}" text-anchor="end" class="t-chica t-halo">Acuífero: ${a.mat.nombre.toLowerCase()}, ${fmt(est.b, 0)} m</text>`;
+  svg += `<text x="${xTxt}" y="${Math.min(yB - 4, Y(est.fondo) + 12)}" text-anchor="end" class="t-chica t-halo">Roca</text>`;
+  const xNivel = a.L + (xMax - a.L) * 0.5;
+  svg += `<text x="${X(xNivel)}" y="${Y(nivel(xNivel)) - 5}" text-anchor="middle" class="t-chica t-halo">${libre ? 'Nivel freático' : 'Nivel piezométrico'}</text>`;
+  if (conPozo) svg += `<text x="${xp + 6}" y="${aguaPozo + 3}" class="t-chica t-halo">s = ${fmt(Math.min(a.cono.s, 999), 2)} m</text>`;
+  // Escala horizontal
+  svg += `<text x="${X(0)}" y="${H - 8}" text-anchor="middle" class="t-chica">0</text><text x="${xp}" y="${H - 8}" text-anchor="middle" class="t-chica">${fmt(a.L, 0)} m</text><text x="${X(xMax)}" y="${H - 8}" text-anchor="end" class="t-chica">${fmt(xMax, 0)} m</text>`;
+  svg += '</svg>';
+  const textoFlujo = a.via === 'bombeo'
+    ? `El pozo atrae agua del río: llega en ${fmt(a.tViaje, 1)} días.`
+    : (a.via === 'natural' ? `El río pierde agua hacia el acuífero; llega al pozo en ${fmt(a.tViaje, 0)} días.` : 'El acuífero alimenta al río: el agua del río no llega al pozo.');
+  const leyenda = `<p class="leyenda-plano"><span><i style="background:var(--agua)"></i>agua (río y acuífero saturado)</span><span>línea gruesa: ${libre ? 'nivel freático' : 'nivel piezométrico'} con el pozo; punteada: sin bombear</span><span>${textoFlujo}</span></p>`;
+  return svg + leyenda;
+}
+
 const PINTORES = {
   captacion() {
     const desnivel = p.cotaTanque + sim.nivel - p.cotaRio;
@@ -1309,7 +1460,6 @@ const PINTORES = {
     const cal = rv.calidad;
     const ini = cal.inicio;
     const sed = rv.sed;
-    const acu = rv.acu;
     const tipo = cal.tipo;
     const nivelOD = (od) => (od < p.odMin ? 'alerta' : (od < p.odMin + 1 ? 'aviso' : 'ok'));
     const nivelCF = (cf) => (cf > p.cfMax ? 'alerta' : 'ok');
@@ -1356,13 +1506,6 @@ const PINTORES = {
         ...(ini && cal.bocatoma.tViaje != null ? [['Tiempo de viaje del vertimiento a la bocatoma', fmtTiempo(cal.bocatoma.tViaje * 86400), '']] : []),
         ['Desembocadura: oxígeno disuelto', cal.desembocadura.OD, 'mg/L', nivelOD(cal.desembocadura.OD)],
         ['Desembocadura: coliformes fecales', R.miles(cal.desembocadura.CF), 'NMP/100 mL'],
-        ['<b>Acuífero de la zona baja</b>', '', ''],
-        ['Suelo y tipo de acuífero', `${acu.suelo.nombre}; ${acu.tipo.nombre.toLowerCase()}`, ''],
-        ['Velocidad de infiltración v = K/n<sub>e</sub>', fmt(acu.v, acu.v < 1 ? 3 : 2), 'm/día'],
-        ['Tiempo de llegada al agua subterránea', fmtTiempo(acu.t * 86400), ''],
-        ['Coliformes que llegan', acu.CF < 1 ? fmt(acu.CF, 3) : R.miles(acu.CF), 'NMP/100 mL', acu.CF <= 1 ? 'ok' : 'aviso'],
-        ['Nitratos que llegan', acu.NO3, 'mg/L de N', acu.NO3 <= 10 ? 'ok' : 'alerta'],
-        ['Índice de vulnerabilidad GOD', `${fmt(acu.god)} (${acu.clase})`, '', acu.god < 0.5 ? 'ok' : 'aviso'],
       ]),
       revision: rv.checks,
       perfil: perfilRio(),
@@ -1384,10 +1527,6 @@ const PINTORES = {
           ecu.sust(`${i('k')}<sub>a</sub> = 3.93 × ${fmt(h.u, 3)}<sup>0.5</sup> / ${fmt(h.y, 3)}<sup>1.5</sup> = ${fmt(h.ka20, 2)} 1/día a 20 °C (${fmt(h.ka, 2)} a ${h.T} °C);  ${i('L')}<sub>0</sub> = ${fmt(ini.L0)}, ${i('D')}<sub>0</sub> = ${fmt(ini.D0)} mg/L: ${textoCritico}`),
           ecu.nota('El perfil del panel se calcula paso a paso cada 100 m: en cada cambio de zona entran afluentes limpios que diluyen, y cambian la temperatura, la velocidad y la reaireación.'),
         ] : []),
-        ecu.tipo('Decimales: llegada al acuífero (Darcy) y vulnerabilidad (GOD)'),
-        ecu.formula(`${i('v')} = ${i('K')}/${i('n')}<sub>e</sub>,  ${i('t')} = ${i('d')}/${i('v')},  GOD = ${i('G')}·${i('O')}·${i('D')}`),
-        ecu.sust(`${i('v')} = ${acu.suelo.K} / ${acu.suelo.ne} = ${fmt(acu.v, acu.v < 1 ? 3 : 2)} m/día;  ${i('t')} = ${fmt(acu.d, 1)} / ${fmt(acu.v, acu.v < 1 ? 3 : 2)}${acu.tipo.capa ? ' + capa de arcilla' : ''} = ${fmt(acu.t, 2)} días;  GOD = ${acu.G} × ${acu.O} × ${acu.D} = ${fmt(acu.god)}`),
-        ecu.nota(`En el suelo los coliformes mueren (${R.K_SUELO.coliformes} 1/día) y se filtran (${acu.suelo.remocion} unidades logarítmicas por metro); los nitratos no se degradan: lo que entra al suelo termina en el agua subterránea. Se toma la peor agua del río en la zona baja, que es la que recarga el acuífero.`),
         ecu.nota('Valores de referencia: coliformes fecales ≤ 2 000 NMP/100 mL y nitratos ≤ 10 mg/L de N en el agua que se potabiliza con tratamiento convencional, y oxígeno disuelto ≥ 4 mg/L para la vida acuática en aguas cálidas (Decreto 1594 de 1984, compilado en el Decreto 1076 de 2015). La Resolución 0565 de 2026 del Ministerio de Ambiente fija nuevos criterios de calidad que rigen desde mayo de 2027. Los límites del panel son editables.'),
       ].join(''),
       leyenda: 'Oxígeno disuelto y DBO del nacimiento (km 0) a la desembocadura (km 50). El vertimiento sube la DBO; las bacterias que la consumen gastan el oxígeno, y el río lo recupera del aire.',
@@ -1677,6 +1816,126 @@ const PINTORES = {
     };
   },
 
+  acuifero() {
+    const a = r.acuifero;
+    const est = a.est;
+    const v = a.vert;
+    const libre = !est.tipo.capa;
+    const suelo = R.SUELOS[p.sueloAcuifero] ?? R.SUELOS.arena;
+    const regimen = {
+      perdedor: 'El río pierde agua: recarga el acuífero',
+      ganador: 'El río gana agua: el acuífero lo alimenta',
+      equilibrio: 'En equilibrio: casi no hay intercambio',
+    }[a.regimen];
+    const via = {
+      bombeo: 'Sí: el cono del pozo alcanza el río y lo atrae',
+      natural: 'Sí, por el flujo natural del río al acuífero',
+      ninguna: 'No: el acuífero corre hacia el río',
+    }[a.via];
+    const nivelCF = (cf) => (cf <= 1 ? 'ok' : 'aviso');
+    const tViajeTxt = a.llega ? fmtTiempo(a.tViaje * 86400) : 'no llega';
+    return {
+      metricas: metricas([
+        ['<b>Capas del terreno</b>', '', ''],
+        [libre ? 'Zona no saturada (sobre el agua)' : 'Suelo', `${suelo.nombre}, ${fmt(est.d, 1)} m`, ''],
+        ...(libre ? [] : [['Capa de arcilla (confina el acuífero)', fmt(est.e, 1), 'm']]),
+        ['Acuífero', `${a.mat.nombre}, ${fmt(est.b, 1)} m`, ''],
+        ['Conductividad hidráulica K', a.K, 'm/día', '', a.K < 10 ? 2 : 0],
+        ['Porosidad efectiva n<sub>e</sub>', a.mat.ne, ''],
+        ['Transmisividad T = K·b', a.K * est.b, 'm²/día', '', 0],
+        ['<b>El río y el acuífero</b>', '', ''],
+        ['Nivel del río', a.hRio, 'm.s.n.m.'],
+        [libre ? 'Nivel freático lejos del río' : 'Nivel piezométrico lejos del río', est.nivel, 'm.s.n.m.'],
+        ['Diferencia río − acuífero', a.dh, 'm'],
+        ['Intercambio', regimen, '', a.regimen === 'ganador' ? 'aviso' : 'ok'],
+        ['Gradiente hidráulico i', a.i, 'm/m', '', 4],
+        ['Velocidad del agua subterránea', fmt(a.vNat, a.vNat < 1 ? 3 : 2), 'm/día'],
+        ['Caudal por metro de orilla', fmt(a.qOrilla, 3), 'm³/día por m'],
+        ['<b>Pozo de una finca</b>', '', ''],
+        ['Caudal del pozo', p.Qpozo, 'L/s', '', 1],
+        ['Distancia al río', a.L, 'm', '', 0],
+        ['Abatimiento en el pozo', a.Q > 0 ? fmt(a.cono.s) : 'sin bombeo', a.Q > 0 ? 'm' : '', a.seco ? 'alerta' : 'ok'],
+        ['Radio del cono de abatimiento', a.Q > 0 ? fmt(a.cono.R, 1) : '—', a.Q > 0 ? 'm' : ''],
+        ['Nivel del agua dentro del pozo', a.Q > 0 ? (a.seco ? 'el pozo se seca' : fmt(a.nivelPozo)) : fmt(A.nivelNatural(a, a.L)), a.Q > 0 && a.seco ? '' : 'm.s.n.m.', a.seco ? 'alerta' : ''],
+        ['Abatimiento bajo el río', a.sRio, 'm', '', 3],
+        ['¿Llega agua del río al pozo?', via, ''],
+        ['Tiempo de viaje del río al pozo', tViajeTxt, '', a.llega ? (a.tViaje >= A.DIAS_PROTECCION ? 'ok' : 'aviso') : 'ok'],
+        ...(a.via === 'bombeo' ? [['Velocidad media hacia el pozo', fmt(a.vMedia, a.vMedia < 1 ? 3 : 2), 'm/día']] : []),
+        ['<b>Calidad del agua</b>', '', ''],
+        ['Agua del río que recarga: coliformes', R.miles(a.agua.CF), 'NMP/100 mL'],
+        ['Agua del río que recarga: nitratos', a.agua.NO3, 'mg/L de N'],
+        ['Pozo: coliformes fecales', a.CFpozo < 1 ? fmt(a.CFpozo, 3) : R.miles(a.CFpozo), 'NMP/100 mL', nivelCF(a.CFpozo)],
+        ['Pozo: nitratos', a.NO3pozo, 'mg/L de N', a.NO3pozo <= 10 ? 'ok' : 'alerta'],
+        ['<b>Infiltración desde la superficie</b>', '', ''],
+        ['Velocidad de infiltración v = K/n<sub>e</sub>', fmt(v.v, v.v < 1 ? 3 : 2), 'm/día'],
+        ['Tiempo para llegar al agua subterránea', fmtTiempo(v.t * 86400), ''],
+        ['Coliformes que llegan', v.CF < 1 ? fmt(v.CF, 3) : R.miles(v.CF), 'NMP/100 mL', nivelCF(v.CF)],
+        ['Nitratos que llegan', v.NO3, 'mg/L de N', v.NO3 <= 10 ? 'ok' : 'alerta'],
+        ['Índice de vulnerabilidad GOD', `${fmt(v.god)} (${v.clase})`, '', v.god < 0.5 ? 'ok' : 'aviso'],
+      ]),
+      revision: a.checks,
+      corte: corteAcuifero(),
+      ecuacion: [
+        ecu.tipo('Decimales: ley de Darcy (cuánto se mueve el agua subterránea)'),
+        ecu.formula(`${i('v')} = ${i('K')}·${i('i')}/${i('n')}<sub>e</sub>,  ${i('i')} = Δ${i('h')}/${i('L')}<sub>c</sub>,  Δ${i('h')} = ${i('h')}<sub>río</sub> − ${i('h')}<sub>acuífero</sub>`),
+        ecu.sust(`${i('i')} = (${fmt(a.hRio)} − ${fmt(est.nivel)}) / ${A.L_CONEXION} = ${fmt(a.dh / A.L_CONEXION, 5)};  ${i('v')} = ${fmt(a.K, a.K < 10 ? 2 : 0)} × ${fmt(a.i, 5)} / ${fmt(a.mat.ne)} = ${fmt(a.vNat, 3)} m/día`),
+        ecu.nota('Si el río está más alto que el agua subterránea le entrega agua (río perdedor, común en temporada de lluvias); si está más bajo, el acuífero alimenta al río (río ganador, común en la época seca). El agua subterránea avanza metros por día, mientras el río avanza kilómetros por hora.'),
+        ecu.tipo('Función logarítmica: cono de abatimiento del pozo (Thiem)'),
+        ecu.formula(`${i('s')}(${i('r')}) = ${i('Q')}/(2π${i('T')})·ln(${i('R')}/${i('r')}),  ${i('T')} = ${i('K')}·${i('b')},  ${i('R')} = 3000·${i('s')}<sub>w</sub>·√${i('K')} (Sichardt, ${i('K')} en m/s)`),
+        a.Q > 0
+          ? ecu.sust(`${i('T')} = ${fmt(a.K / 86400, 6)} × ${fmt(est.b, 1)} = ${fmt(a.T, 5)} m²/s;  ${i('s')}<sub>w</sub> = ${fmt(a.Q, 4)} / (2π × ${fmt(a.T, 5)}) × ln(${fmt(a.cono.R, 1)} / ${A.RADIO_POZO}) = ${fmt(a.cono.s)} m`)
+          : ecu.sust('Sin bombeo no hay cono: el nivel del pozo es el del acuífero.'),
+        ecu.tipo('Ecuación cuadrática: tiempo de viaje del río al pozo'),
+        ecu.formula(`${i('t')} = π·${i('b')}·${i('n')}<sub>e</sub>·${i('L')}² / ${i('Q')}  (si el cono alcanza el río),  ${i('t')} = ${i('L')}/${i('v')}  (solo con el flujo natural)`),
+        a.via === 'bombeo'
+          ? ecu.sust(`${i('t')} = π × ${fmt(est.b, 1)} × ${fmt(a.mat.ne)} × ${fmt(a.L, 0)}² / (${fmt(a.Q, 4)} × 86 400) = ${fmt(a.tHoriz, 1)} días${a.tCapa ? ` + ${fmt(a.tCapa, 1)} días para cruzar la arcilla = ${fmt(a.tViaje, 1)} días` : ''}`)
+          : (a.via === 'natural'
+            ? ecu.sust(`${i('t')} = ${fmt(a.L, 0)} / ${fmt(a.vNat, 3)} = ${fmt(a.tHoriz, 0)} días${a.tCapa ? ` + ${fmt(a.tCapa, 1)} (arcilla)` : ''}`)
+            : ecu.sust('El agua del río no llega al pozo: el acuífero corre hacia el río y el cono no lo alcanza.')),
+        ecu.nota(`Al doble de distancia, el agua tarda cuatro veces más: por eso los pozos se alejan del río. Se suele pedir que el agua tarde al menos ${A.DIAS_PROTECCION} días en llegar, para que las bacterias y los virus mueran en el camino.`),
+        ecu.tipo('Decimales: infiltración desde la superficie y vulnerabilidad (GOD)'),
+        ecu.formula(`${i('v')} = ${i('K')}/${i('n')}<sub>e</sub>,  ${i('t')} = ${i('d')}/${i('v')},  GOD = ${i('G')}·${i('O')}·${i('D')}`),
+        ecu.sust(`${i('v')} = ${suelo.K} / ${suelo.ne} = ${fmt(v.v, v.v < 1 ? 3 : 2)} m/día;  ${i('t')} = ${fmt(v.d, 1)} / ${fmt(v.v, v.v < 1 ? 3 : 2)}${v.tipo.capa ? ' + capa de arcilla' : ''} = ${fmt(v.t, 2)} días;  GOD = ${v.G} × ${v.O} × ${v.D} = ${fmt(v.god)}`),
+        ecu.nota(`En el suelo los coliformes mueren (${R.K_SUELO.coliformes} 1/día) y se filtran (${suelo.remocion} unidades logarítmicas por metro); los nitratos no se degradan. Se toma la peor agua del río en la zona baja, que es la que recarga el acuífero. El radio de Sichardt es una aproximación para un pozo que lleva tiempo bombeando; en un estudio real se hace una prueba de bombeo.`),
+      ].join(''),
+      leyenda: 'Nivel del agua subterránea desde el río (a la izquierda) hasta más allá del pozo: sin bombear y con el pozo bombeando. El hueco alrededor del pozo es el cono de abatimiento.',
+      grafica(g) {
+        const c = paleta();
+        const xMax = Math.max(100, Math.min(600, Math.ceil((Math.max(2.3 * a.L, a.L + 30)) / 10) * 10));
+        const xs = Array.from({ length: 161 }, (_, k) => -20 + ((xMax + 20) * k) / 160);
+        if (!xs.includes(a.L)) { xs.push(a.L); xs.sort((m, n) => m - n); }
+        // Se muestra la parte de arriba (suelo, nivel y cono); el fondo del acuífero está en el corte
+        const piso = Math.max(est.fondo, Math.floor(Math.min(a.nivelPozo, est.nivel, R.CAUCE.fondo) - 1.5));
+        actualizarGrafica(g, [
+          serieLinea('Terreno (zona sin agua)', xs.map((x) => ({ x, y: terrenoCorte(x) })), c.ocre, { relleno: '+1', colorRelleno: `${c.ocre}38` }),
+          serieLinea('Nivel con el pozo (agua debajo)', xs.map((x) => ({ x, y: Math.max(piso, nivelCorte(a, x)) })), c.agua, { ancho: 2.5, relleno: 'start', colorRelleno: `${c.agua}2e` }),
+          serieLinea('Nivel sin bombear', xs.map((x) => ({ x, y: x < 0 ? nivelCorte(a, x) : A.nivelNatural(a, x) })), c.agua, { punteada: true, ancho: 1 }),
+          serieLinea('Pozo', [{ x: a.L, y: A.COTA_LLANURA + 0.5 }, { x: a.L, y: piso }], c.alerta, { ancho: 1.5 }),
+          seriePuntos('Nivel del río', [{ x: RIO_CORTE.centro, y: a.hRio }], c.agua),
+        ], { x: { min: -20, max: xMax }, y: { min: piso, max: Math.ceil(A.COTA_LLANURA + 1.5) } });
+      },
+      ejes: { xTitulo: 'Distancia desde la orilla del río (m)', yTitulo: 'Cota (m.s.n.m.)', formatoX: (x) => fmt(x, 0), formatoY: (y) => fmt(y, 1) },
+      extra: {
+        leyenda: a.llega
+          ? `Agua del río que va llegando al pozo con el paso de los días. A los ${fmt(a.tViaje, 0)} días llega la mitad; los nitratos llegan completos y los coliformes casi no llegan porque mueren en el camino.`
+          : 'Con el acuífero corriendo hacia el río y el cono lejos de él, el agua del río no llega al pozo: el pozo saca agua del acuífero.',
+        grafica(g) {
+          const c = paleta();
+          const tMax = a.llega ? Math.max(60, Math.ceil((2.6 * a.tViaje) / 10) * 10) : 365;
+          const ts = Array.from({ length: 121 }, (_, k) => (tMax * k) / 120);
+          const atenuacion = a.llega ? Math.exp(-A.K_COLIFORMES_ACUIFERO * a.tViaje) * 10 ** -a.logs : 0;
+          actualizarGrafica(g, [
+            serieLinea('Nitratos (no se degradan)', ts.map((t) => ({ x: t, y: 100 * A.curvaLlegada(a.tViaje, t) })), c.ocre, { ancho: 2.5 }),
+            serieLinea('Coliformes (mueren y se filtran)', ts.map((t) => ({ x: t, y: 100 * atenuacion * A.curvaLlegada(a.tViaje, t) })), c.alerta),
+            serieLinea(`Criterio de ${A.DIAS_PROTECCION} días`, [{ x: A.DIAS_PROTECCION, y: 0 }, { x: A.DIAS_PROTECCION, y: 100 }], c.tinta2, { punteada: true, ancho: 1 }),
+            ...(a.llega ? [seriePuntos('Mitad del agua del río', [{ x: a.tViaje, y: 50 }], c.agua)] : []),
+          ], { x: { min: 0, max: tMax }, y: { min: 0, max: 100 } });
+        },
+        ejes: { xTitulo: 'Días desde que el agua del río entra al acuífero', yTitulo: 'Llega al pozo (%)', formatoX: (x) => fmt(x, 0), formatoY: (y) => fmt(y, 0) },
+      },
+    };
+  },
+
   arroyo() {
     const c = r.canal;
     const kc = c.coef;
@@ -1747,6 +2006,7 @@ function pintarDiseno(f, datos) {
   if (f.revision && datos.revision) setHTML(f.revision, revisionHTML(datos.revision));
   if (f.tablas && datos.tablas) setHTML(f.tablas, datos.tablas);
   if (f.perfil && datos.perfil) setHTML(f.perfil, datos.perfil);
+  if (f.corte && datos.corte) setHTML(f.corte, datos.corte);
   if (datos.red) {
     setHTML(f.plano, datos.red.plano);
     setHTML(f.zanja, datos.red.zanja.svg);
@@ -1970,6 +2230,10 @@ const CONSTANTES = [
   ['kb20', 'Muerte de coliformes a 20 °C, k_b', '1/día', 2, () => R.K20.kb],
   ['Ssuccion', 'Velocidad específica de succión de referencia S', '', 0, () => B.S_SUCCION],
   ['Ra', 'Radiación extraterrestre media (11° N)', 'mm/día', 1, () => G.RA],
+  ['cotaLlanura', 'Cota de la llanura junto al río', 'm.s.n.m.', 2, () => A.COTA_LLANURA],
+  ['Lconexion', 'Distancia en la que el nivel freático se une al río', 'm', 0, () => A.L_CONEXION],
+  ['radioPozo', 'Radio del pozo', 'm', 2, () => A.RADIO_POZO],
+  ['kAcuifero', 'Muerte de coliformes en el agua subterránea', '1/día', 2, () => A.K_COLIFORMES_ACUIFERO],
   ['rho', 'Densidad del agua ρ (25 °C)', 'kg/m³', 2, () => M.RHO],
   ['mu', 'Viscosidad del agua μ (25 °C)', 'Pa·s', 5, () => M.MU],
   ['g', 'Gravedad g', 'm/s²', 2, () => M.G],
@@ -2089,6 +2353,8 @@ async function exportarExcel(boton) {
         ['Oxígeno disuelto mínimo del río', cal.odMin.od, 'mg/L'],
         ['Vertimiento', cal.inicio ? `${cal.tipo.nombre}, ${fmt(p.Qvert, 1)} L/s, ${R.PUNTOS_VERTIMIENTO[p.vertZona].toLowerCase()}` : cal.tipo.nombre],
         ['Riego', `${fmt(p.areaRiego, 1)} ha de ${rg.dis.c.nombre.toLowerCase()} en la ${rg.zona.nombre.toLowerCase()}, ${rg.dis.m.nombre.toLowerCase()}: ${fmt(M.m3sAlps(rg.dis.Q))} L/s`],
+        ['Río y acuífero', { perdedor: 'el río recarga el acuífero', ganador: 'el acuífero alimenta al río', equilibrio: 'en equilibrio' }[r.acuifero.regimen]],
+        ['Pozo de la finca', r.acuifero.Q > 0 ? `${fmt(p.Qpozo, 1)} L/s a ${fmt(p.distanciaPozo, 0)} m del río: abatimiento ${fmt(r.acuifero.cono.s)} m; el agua del río ${r.acuifero.llega ? `llega en ${fmt(r.acuifero.tViaje, 1)} días` : 'no llega'}` : 'sin bombear'],
         ['Arroyo', c.desborde ? `Desborde: faltan ${fmt(p.Qcrecida - c.Qcap)} m³/s` : `Sin desborde (${fmt((p.Qcrecida / c.Qcap) * 100, 0)} % de la capacidad)`],
       ],
       actual: instantanea('Al exportar'),
@@ -2204,6 +2470,7 @@ function pintarEstados() {
   const alertas = { vivienda: r.estado !== 'normal' || r.casa.cerrada, tanque: r.vacio, arroyo: c.desborde,
     rio: hayAlerta(r.rio.checks), captacion: !r.capta,
     bombas: hayAlerta(r.bombas.checksA) || hayAlerta(r.bombas.checksR), riego: hayAlerta(r.riego.checks),
+    acuifero: hayAlerta(r.acuifero.checks),
     red: r.checks.some((x) => x.nivel === 'alerta' && /Red|Acometida/.test(x.texto)),
     tuberias: r.checks.some((x) => x.nivel === 'alerta' && /Aducción|Conducción/.test(x.texto)) };
   for (const t of TABS) {
@@ -2347,10 +2614,19 @@ function iniciar() {
     console.error(e);
     ok = false;
   }
+  const vistas = document.getElementById('vistas');
   if (!ok) {
     escena = null;
     document.getElementById('sinWebgl').hidden = false;
     document.getElementById('ayuda').hidden = true;
+    vistas.hidden = true;
+  } else {
+    // Botones de vista: la escena avisa cuál quedó activa (también cuando cambia sola con la pestaña)
+    escena.onVista = (v) => vistas.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.vista === v)));
+    vistas.addEventListener('click', (ev) => {
+      const b = ev.target.closest('button[data-vista]');
+      if (b) escena.irAVista(b.dataset.vista);
+    });
   }
   recalcular();
   sincronizarControles();
