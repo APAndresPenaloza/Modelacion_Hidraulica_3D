@@ -5,8 +5,12 @@
  * arriba de la ciudad sigue la cuenca: el río baja de la montaña (zona alta) por el
  * piedemonte (zona media) hasta la llanura y el mar (zona baja). El río sube y se
  * enturbia con las lluvias y se tiñe desde el vertimiento; en cada zona hay un
- * cultivo, y el de la zona elegida se riega con su propia bomba. Al frente, un corte
- * del terreno muestra el acuífero, el nivel freático y el pozo de una finca.
+ * cultivo, y el de la zona elegida se riega con su propia bomba. En la zona alta, una
+ * represa forma un embalse; su central manda la energía a la ciudad por una línea, y una
+ * tubería baja el agua por gravedad hasta el tanque. Las crecientes del río y el desborde
+ * del arroyo inundan la vega donde está el cultivo de la llanura. Un corte del terreno
+ * (en la llanura, el piedemonte o la montaña) muestra el acuífero, el nivel freático y el
+ * pozo de una finca.
  *
  * La escena solo dibuja: todos los números vienen de sistema.js.
  */
@@ -17,6 +21,8 @@ import * as M from './modelo.js';
 import * as G from './riego.js';
 import * as R from './rio.js';
 import * as A from './acuifero.js';
+import * as P from './represa.js';
+import * as H from './huella.js';
 
 // ── Escalas y posiciones de la escena ──────────────────────────────────────
 const VS = 0.6;           // escala vertical: 1 m de cota = 0.6 unidades
@@ -167,6 +173,16 @@ function interp(claves, x) {
   return claves[claves.length - 1][1];
 }
 
+// Vega junto al cultivo de la llanura: más baja que la calle (cota 3.20 m); el río la
+// inunda cuando sube por encima de esa cota y allí también cae el desborde del arroyo
+const VEGA = { x0: -35.5, x1: -6, z0: 25.5, z1: 42.5, borde: 2.5 };
+const Y_VEGA = H.COTA_VEGA * VS;
+function pesoVega(x, z) {
+  const d = Math.max(VEGA.x0 - x, x - VEGA.x1, VEGA.z0 - z, z - VEGA.z1);
+  return d <= 0 ? 1 : 1 - suave(d / VEGA.borde);
+}
+const COLOR_MARCHITO = new THREE.Color(0x8d6b3a);
+
 // Perfil del corredor del acueducto (z ≈ 0) y de la llanura urbana (z > 16)
 const PERFIL = [[-110, 6], [-52, 3.4], [-44, 0.3], [-36, 0.3], [-33, 2.2], [-26, 6], [-7, 22.8], [6, 22.8], [17, 10], [24, 7.2], [44, 7.2], [57, -1.5], [120, -1.5]];
 // La llanura queda a nivel de la calle, con orillas bajas a lado y lado del río
@@ -183,6 +199,9 @@ export function alturaTerreno(x, z) {
   // Ondulación suave lejos de las estructuras
   const banda = Math.max(suave(1 - Math.max(0, Math.abs(z - Z_CANAL) - 8) / 6), 0.85 * suave(1 - Math.abs(z) / 6));
   y += (1 - banda) * 0.45 * Math.sin(x * 0.31 + z * 0.17) * Math.cos(z * 0.23 - x * 0.05);
+  // Vega del cultivo de la llanura
+  const wv = pesoVega(x, z);
+  if (wv > 0) y -= wv * Math.max(0, y - Y_VEGA);
   // Excavación del arroyo canalizado, del pozo de disipación y de la captación
   if (CORTE) y = aplicarCorte(x, z, y);
   return cortarCaptacion(x, z, y);
@@ -234,6 +253,9 @@ function interpLineal(tabla, x) {
 const Z_KM = KM_Z.map(([km, z]) => [z, km]);
 export const zDeKm = (km) => interpLineal(KM_Z, km);
 export const kmDeZ = (z) => interpLineal(Z_KM, z);
+// Represa de la zona alta: la presa se dibuja con su propia escala vertical
+const VS_PRESA = 0.25;                  // unidades de la escena por metro de altura de la presa
+const Z_PRESA = zDeKm(P.PRESA.km);
 
 // Altura del lecho del río [unidades de la escena] según el km
 const LECHO_KM = [[0, 40], [5, 31], [10, 22], [15, 15], [20, 9.5], [25, 5.5], [30, 2.6], [35, 0.3], [50, 0.3]];
@@ -367,6 +389,26 @@ function caja(w, h, d, color, opciones = {}) {
 }
 
 const fmt = (x, d = 2) => (Number.isFinite(x) ? M.redondear(x, d).toFixed(d) : '—');
+
+/** Prisma: una sección (polígono convexo [[z, y], …]) extruida a lo largo de x, de x0 a x1. */
+function prisma(seccion, x0, x1, material) {
+  const pos = [];
+  const n = seccion.length;
+  const v = (x, [z, y]) => [x, y, z];
+  for (let k = 0; k < n; k++) {
+    const a = seccion[k];
+    const b = seccion[(k + 1) % n];
+    pos.push(...v(x0, a), ...v(x1, a), ...v(x1, b), ...v(x0, a), ...v(x1, b), ...v(x0, b));
+  }
+  for (let k = 1; k < n - 1; k++) {
+    pos.push(...v(x0, seccion[0]), ...v(x0, seccion[k + 1]), ...v(x0, seccion[k]));
+    pos.push(...v(x1, seccion[0]), ...v(x1, seccion[k]), ...v(x1, seccion[k + 1]));
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  return new THREE.Mesh(geo, material);
+}
 
 /**
  * Intensidad visual de la turbulencia: 0 en laminar, sube suavemente en la
@@ -733,6 +775,8 @@ export class Escena {
       red: this.grupo('red'),
       casa: this.grupo('vivienda'),
       canal: this.grupo('arroyo'),
+      represa: this.grupo('represa'),
+      rutas: this.grupo('represa'),
     };
     this.construirBomba();
     this.construirCaptacion();
@@ -743,6 +787,7 @@ export class Escena {
     this.flujoCaptacion = new FlujoCaptacion(this.scene);
     this.flujoRiego = new FlujoTubo(this.scene, 160);
     this.particulasRio();
+    this.construirVega();
     this.chorroGrifo = new Chorro(this.scene, 70, 0.06);
     this.chorroCompuerta = new Chorro(this.scene, 420, 0.12);
     this.particulasCanal();
@@ -754,6 +799,8 @@ export class Escena {
     this.redimensionar();
     this.eventosSeleccion();
 
+    this.planoCorte = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0);
+    this.recortando = false;
     this.reloj = new THREE.Clock();
     this.listo = true;
     if (this.p) this.actualizar(this.p, this.r, this.nivel);
@@ -1578,6 +1625,10 @@ export class Escena {
       ['zonaAlta', 'rio', 'Zona alta: montaña'],
       ['zonaMedia', 'rio', 'Zona media: piedemonte'],
       ['zonaBaja', 'rio', 'Zona baja: llanura y ciudad'],
+      ['represa', 'represa', 'Represa y embalse'],
+      ['central', 'represa', 'Central hidroeléctrica'],
+      ['linea', 'represa', 'Línea a la ciudad'],
+      ['tuberiaPresa', 'represa', 'Tubería por gravedad'],
       ['bocatoma', 'captacion', 'Bocatoma y desarenador'],
       ['bomba', 'bombas', 'Estación de bombeo'],
       ['riego', 'riego', 'Cultivo con riego'],
@@ -1602,10 +1653,11 @@ export class Escena {
     const centros = {
       rio: [0, 0.5], vertimiento: [0, 0.5], bombaRiego: [1, 0.5],
       zonaAlta: [0.5, 1], zonaMedia: [0.5, 1], zonaBaja: [0.5, 1],
+      represa: [0.5, 1], central: [0, 0.5], linea: [0.5, 1], tuberiaPresa: [0, 0.5],
       corteRio: [0.5, 1], corteNivel: [0.5, 1], pozo: [0.5, 1], corteFlujo: [0.5, 0],
       corteSuelo: [0, 1], corteArcilla: [0, 0], corteAcuifero: [0, 0.5], corteRoca: [0, 0.5],
     };
-    const secundarias = ['rio', 'aduccion', 'distribucion', 'piezo', 'red', 'bombaRiego', 'corteRoca', 'corteFlujo'];
+    const secundarias = ['rio', 'aduccion', 'distribucion', 'piezo', 'red', 'bombaRiego', 'corteRoca', 'corteFlujo', 'tuberiaPresa'];
     for (const [id, tab, titulo] of defs) {
       const el = document.createElement('div');
       el.className = 'etiqueta3d' + (tab ? '' : ' piezo') + (secundarias.includes(id) ? ' secundaria' : '') + (id.startsWith('zona') ? ' zona' : '');
@@ -1728,6 +1780,17 @@ export class Escena {
     const bA = r.bombas.acueducto;
     const kU = [bA.tipoId, bA.N, bA.unidades, bA.motor.hp].join('|');
     if (kU !== this.claves.unidades) { this.construirUnidades(); this.claves.unidades = kU; }
+    // Represa: la presa cambia con su altura; la tubería, con las cámaras de quiebre
+    const rep = r.represa;
+    const kP = k(rep.Hp);
+    if (kP !== this.claves.represa) { this.construirRepresa(); this.claves.represa = kP; this.claves.rutas = null; }
+    const kRu = [rep.camaras, k(p.Dtanque)].join('|');
+    if (kRu !== this.claves.rutas) { this.construirRutas(); this.claves.rutas = kRu; }
+    const gp = this.presa;
+    this.embalse.visible = rep.nivel > 0.05;
+    this.embalse.position.y = gp.yb + Math.max(0.05, rep.nivel) * VS_PRESA;
+    this.laminaAliviadero.visible = rep.llena && rep.Qvert > 1e-6;
+    this.chorroFondo.visible = !rep.llena && rep.Qvert > 1e-6;
     const cal = r.rio.calidad;
     // Río: lámina de la ciudad, franja de aguas arriba y color a lo largo del cauce
     // (sedimento de las lluvias y, desde el vertimiento, la contaminación de cada km)
@@ -1743,8 +1806,8 @@ export class Escena {
     if (kG !== this.claves.riego) { this.construirRiego(); this.claves.riego = kG; }
     // Corte del terreno con el acuífero y el pozo
     const a = r.acuifero;
-    const kAc = [p.tipoAcuifero, p.sueloAcuifero, p.materialAcuifero, p.vertTipo, a.via, a.regimen, a.agua.CF > p.cfMax || a.agua.NO3 > 10,
-      k(p.cotaRio, a.est.nivel, a.b, a.cono.s, a.cono.R, a.L, a.Q, Math.min(1e6, a.tViaje), a.vNat)].join('|');
+    const kAc = [a.zona, p.tipoAcuifero, p.sueloAcuifero, p.materialAcuifero, p.vertTipo, a.via, a.regimen, a.agua.CF > p.cfMax || a.agua.NO3 > 10,
+      k(p.cotaRio, a.hRio, a.est.nivel, a.b, a.cono.s, a.cono.R, a.L, a.Q, Math.min(1e6, a.tViaje), a.vNat)].join('|');
     if (kAc !== this.claves.corte) { this.construirCorte(); this.claves.corte = kAc; }
     // Captación: el agua entra por la rejilla mientras el río la alcance
     CAP.aguaDes = Math.max(CAP.crestaVert + 0.03, Math.min(CAP.tope - 0.15, yRio - 0.05));
@@ -1777,15 +1840,24 @@ export class Escena {
     if (kAgua !== this.claveAgua) { this.formaAgua(yAgua); this.claveAgua = kAgua; }
     this.placa.position.set(X_COMPUERTA - 0.25, piso + yAgua + (H + 0.3) / 2, Z_CANAL);
     if (c.desborde) {
+      // El agua se sale a la calle (hacia la ciudad) y baja a la vega del cultivo (al otro lado)
       const exceso = Math.min(3, (p.Qcrecida - c.Qcap) / Math.max(c.Qcap, 0.1));
       const ext = 2.5 + exceso * 6;
+      const zN = Z_CANAL - W - ext;
+      const zS = Math.min(Z_CANAL + W + ext, VEGA.z0 - 0.6);
       this.inundacion.visible = true;
-      this.inundacion.scale.set(L * 0.92, 2 * W + 2 * ext, 1);
-      this.inundacion.position.set(xm - L * 0.03, CORONA + 0.06 + Math.min(0.35, exceso * 0.15), Z_CANAL);
+      this.inundacion.scale.set(L * 0.92, zS - zN, 1);
+      this.inundacion.position.set(xm - L * 0.03, CORONA + 0.06 + Math.min(0.35, exceso * 0.15), (zN + zS) / 2);
     } else {
       this.inundacion.visible = false;
     }
     this.aguaFosa.position.y = piso - p.alturaCaida;
+    // Vega del cultivo de la llanura: creciente del río y desborde del arroyo
+    const lote = r.huella.loteBaja;
+    const yInund = Math.max(lote.profRio > 0 ? yRio : -9, lote.profArroyo > 0 ? Y_VEGA + Math.max(0.06, lote.profArroyo * VS) : -9);
+    this.aguaVega.visible = yInund > Y_VEGA + 0.004;
+    if (this.aguaVega.visible) this.aguaVega.position.y = yInund;
+    if (this.verdeBaja) this.verdeBaja.mat.color.copy(this.verdeBaja.base).lerp(COLOR_MARCHITO, 0.85 * Math.min(1, lote.perdida));
 
     // Chorros
     this.chorroGrifo.configurar({
@@ -1841,18 +1913,30 @@ export class Escena {
     const textoV = !cal.inicio ? 'Sin vertimiento' : `${fmt(p.Qvert, 1)} L/s · km ${fmt(cal.kmV, 1)}, ${R.ZONAS[R.zonaDeKm(cal.kmV)].nombre.toLowerCase()}`;
     this.etiqueta('vertimiento', textoV, cal.inicio && cal.bocatoma.CF > p.cfMax ? 'alerta' : 'ok');
     // Zonas de la cuenca (como en el perfil de la pestaña Río) con el cultivo de cada una
-    for (const [id, zona, km, alto] of [['zonaAlta', 'alta', 6, 15], ['zonaMedia', 'media', 22, 11], ['zonaBaja', 'baja', 38, 9]]) {
+    const cambiaRio = Math.abs(rep.dQ) > 0.005;
+    for (const [id, zona, km, alto] of [['zonaAlta', 'alta', 10.5, 13], ['zonaMedia', 'media', 22, 11], ['zonaBaja', 'baja', 38, 9]]) {
       const Z = R.ZONAS[zona];
       const cultivo = (G.CULTIVOS[zona === p.zonaRiego ? p.cultivo : CULTIVO_TIPICO[zona]]?.nombre ?? '').split(' (')[0].toLowerCase();
       const z = zDeKm(km);
-      this.etiqueta(id, `km ${Z.km[0]} a ${Z.km[1]} · ${R.miles(Z.elevacion)} m.s.n.m. · ${cultivo}`, 'ok', V(xRioEn(z), this.superficieRio(z) + alto, z));
+      const q = rep.zonas[zona];
+      const caudal = cambiaRio ? `${fmt(q.conRepresa)} m³/s (sin represa ${fmt(q.natural)})` : `${fmt(q.natural)} m³/s`;
+      this.etiqueta(id, `km ${Z.km[0]} a ${Z.km[1]} · ${R.miles(Z.elevacion)} m.s.n.m. · ${cultivo} · ${caudal}`, cambiaRio && rep.dQ < 0 ? 'aviso' : 'ok', V(xRioEn(z), this.superficieRio(z) + alto, z));
     }
+    const pctE = (100 * rep.V) / rep.Vmax;
+    const subeE = rep.pendienteNivel * 86400;
+    const tendE = subeE > 1e-6 ? `sube ${fmt(subeE, 2)} m/día` : (subeE < -1e-6 ? `baja ${fmt(-subeE, 2)} m/día` : 'estable');
+    this.etiqueta('represa', `${fmt(rep.nivel, 1)} m de agua · ${fmt(rep.V / 1e6, 2)} Mm³ (${fmt(pctE, 0)} %) · ${tendE}`, rep.nivel >= rep.hMin - 1e-6 ? 'ok' : 'aviso', this.posPresa);
+    this.etiqueta('central', rep.P > 0 ? `${fmt(rep.P / 1000, 0)} kW con ${fmt(rep.Qturb)} m³/s · salto neto ${fmt(rep.Hn, 1)} m` : 'Detenida: el embalse está bajo el nivel mínimo', rep.P > 0 ? 'ok' : 'aviso', this.posCentral);
+    this.etiqueta('linea', `${fmt(p.tensionLinea, 1)} kV, ${P.PRESA.distanciaCiudad} km · pierde ${fmt(100 * rep.linea.fraccion, 1)} % · ${R.miles(rep.Eent)} kWh/mes`, rep.linea.fraccion <= 0.05 ? 'ok' : 'aviso');
+    this.etiqueta('tuberiaPresa', `${R.miles(rep.desnivel)} m de desnivel · ${rep.camaras} cámaras de quiebre`, 'ok', this.posTuberia);
     const textoBomba = r.bomba ? `${bA.N} × ${bA.motor.hp} HP: ${fmt(p.Qbombeo)} L/s, H = ${fmt(r.alturaBombeo)} m`
       : (r.capta ? `Apagada: arranca a ${fmt(p.nivelArranque)} m` : 'Detenida: el río no alcanza la rejilla');
     this.etiqueta('bomba', textoBomba, r.bomba ? 'ok' : (r.capta ? 'aviso' : 'alerta'), V(X_BOMBA, alturaTerreno(X_BOMBA, 0) + 5.6, 0));
     const rg = r.riego;
-    const nivelRiego = rg.checks.some((x) => x.nivel === 'alerta') ? 'alerta' : 'ok';
-    this.etiqueta('riego', `${rg.dis.c.nombre.split(' (')[0]}, ${fmt(p.areaRiego, 1)} ha · ${rg.regando ? `regando ${fmt(M.m3sAlps(rg.dis.Q))} L/s` : 'en espera'}`, nivelRiego, this.posRiego?.campo);
+    const perdida = r.huella.perdida;
+    const nivelRiego = perdida > 0.005 || rg.checks.some((x) => x.nivel === 'alerta') ? 'alerta' : 'ok';
+    const estadoRiego = perdida > 0.005 ? `inundado: pierde ${fmt(100 * perdida, 0)} %` : (rg.regando ? `regando ${fmt(M.m3sAlps(rg.dis.Q))} L/s` : 'en espera');
+    this.etiqueta('riego', `${rg.dis.c.nombre.split(' (')[0]}, ${fmt(p.areaRiego, 1)} ha · ${estadoRiego}`, nivelRiego, this.posRiego?.campo);
     this.etiqueta('bombaRiego', `${bR.N} × ${bR.motor.hp} HP · ${rg.zona.nombre.toLowerCase()}`, 'ok', this.posRiego?.bomba);
     const textoBocatoma = r.Qin > 0 ? `Retiene granos ≥ ${fmt(des.dMin * 1000, 3)} mm` : 'Sin caudal';
     this.etiqueta('bocatoma', textoBocatoma, 'ok', V(-34, 8, -19));
@@ -1897,6 +1981,7 @@ export class Escena {
       if (vista !== this.vistaTab) { this.vistaTab = vista; if (vista !== this.vista) this.irAVista(vista); }
     }
     if (this.vista === 'riego' && this.zonaVista !== p.zonaRiego) this.irAVista('riego');
+    if (this.vista === 'acuifero' && this.zonaCorteVista !== a.zona) this.irAVista('acuifero');
   }
 
   // ── Unidades de bombeo de la estación del acueducto ──────────────────────
@@ -2140,6 +2225,7 @@ export class Escena {
       for (let j = 0; j < enFila; j++) posiciones.push(xz(u0 + 0.5 + ((j + 0.5 + (k % 2) * 0.35) / enFila) * (u1 - u0 - 1), v));
     });
     const verde = new THREE.MeshStandardMaterial({ color: cultivo.color, roughness: 0.75, side: THREE.DoubleSide });
+    if (s.zona === 'baja') this.verdeBaja = { mat: verde, base: new THREE.Color(cultivo.color) };
     const tronco = new THREE.MeshStandardMaterial({ color: 0x6b5236, roughness: 0.9 });
     const instancias = (geo, mat, ajustar) => {
       const m = new THREE.InstancedMesh(geo, mat, posiciones.length);
@@ -2338,6 +2424,269 @@ export class Escena {
     gotas.instanceMatrix.needsUpdate = true;
   }
 
+  // ── Represa de la zona alta: presa, embalse, central, línea y tubería a la ciudad ──
+  /** Geometría de la presa en la escena (cambia con su altura). */
+  geoPresa() {
+    const rep = this.r.represa;
+    const z0 = Z_PRESA;
+    const xr = xRioEn(z0);
+    const yb = lechoEn(z0);
+    const Hu = rep.Hp * VS_PRESA;
+    const yC = yb + Hu;
+    let xO = xr;
+    while (xO > xr - 70 && alturaEn(xO, z0) < yC) xO -= 0.5;
+    let xE = xr;
+    while (xE < xr + 70 && alturaEn(xE, z0) < yC) xE += 0.5;
+    const corona = 1.4;
+    const zA = z0 - 0.7;
+    const zPie = z0 + 0.7 + 0.6 * Hu;
+    return { z0, xr, yb, Hu, yC, xO: xO - 2.5, xE: xE + 2.5, corona, zA, zPie };
+  }
+
+  construirRepresa() {
+    const g = this.grupos.represa;
+    g.children.slice().forEach((o) => { g.remove(o); liberar(o); });
+    const gp = (this.presa = this.geoPresa());
+    const { xr, yb, Hu, yC, xO, xE, corona, zA, zPie } = gp;
+    const concreto = new THREE.MeshStandardMaterial({ color: 0xbdb8ab, roughness: 0.85, flatShading: true, side: THREE.DoubleSide });
+    // Cuerpo de concreto: sección trapezoidal empotrada en las laderas
+    const cuerpo = prisma([[zA, yb - 3], [zA, yC], [zA + corona, yC], [zPie, yb], [zPie, yb - 3]], xO, xE, concreto);
+    cuerpo.castShadow = true;
+    cuerpo.receiveShadow = true;
+    g.add(cuerpo);
+    // Baranda de la corona
+    const baranda = prisma([[zA + 0.05, yC], [zA + 0.05, yC + 0.35], [zA + 0.2, yC + 0.35], [zA + 0.2, yC]], xO + 2, xE - 2, new THREE.MeshStandardMaterial({ color: 0x8f8a7e, roughness: 0.8 }));
+    g.add(baranda);
+    // Aliviadero en el centro: canal escalonado sobre la cara de aguas abajo
+    const ancho = 2.4;
+    const pend = (yC - yb) / (zPie - zA - corona);
+    const oscuro = new THREE.MeshStandardMaterial({ color: 0x9a958a, roughness: 0.9, flatShading: true, side: THREE.DoubleSide });
+    for (const s of [-1, 1]) {
+      const xm = xr + s * (ancho / 2 + 0.2);
+      g.add(prisma([[zA + corona, yC + 0.5], [zPie, yb + 0.5], [zPie, yb], [zA + corona, yC]], xm - 0.2, xm + 0.2, oscuro));
+    }
+    // Lámina que baja por el aliviadero (se ve cuando la presa vierte)
+    const vert = [];
+    const n = 16;
+    for (let k = 0; k <= n; k++) {
+      const u = k / n;
+      const z = zA + corona + u * (zPie - zA - corona);
+      const y = yC - u * (yC - yb) + 0.12;
+      vert.push(xr - ancho / 2, y, z, xr + ancho / 2, y, z);
+    }
+    const idx = [];
+    for (let k = 0; k < n; k++) idx.push(2 * k, 2 * k + 1, 2 * k + 2, 2 * k + 1, 2 * k + 3, 2 * k + 2);
+    const uv = [];
+    for (let k = 0; k <= n; k++) uv.push(0, (k / n) * 3, 1, (k / n) * 3);
+    const geoL = new THREE.BufferGeometry();
+    geoL.setAttribute('position', new THREE.Float32BufferAttribute(vert, 3));
+    geoL.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geoL.setIndex(idx);
+    geoL.computeVertexNormals();
+    this.texAliviadero = this.texAliviadero || this.texRio.clone();
+    this.texAliviadero.repeat.set(1, 1);
+    this.texAliviadero.needsUpdate = true;
+    this.laminaAliviadero = new THREE.Mesh(geoL, new THREE.MeshStandardMaterial({ map: this.texAliviadero, color: 0xdff3f8, roughness: 0.2, transparent: true, opacity: 0.85, side: THREE.DoubleSide }));
+    this.laminaAliviadero.visible = false;
+    g.add(this.laminaAliviadero);
+    // Salida del desagüe de fondo (cuando suelta más de lo que pasa por las turbinas)
+    this.chorroFondo = new THREE.Mesh(new THREE.ConeGeometry(0.7, 3.2, 10, 1, true), new THREE.MeshStandardMaterial({ color: 0xe9f6fa, roughness: 0.3, transparent: true, opacity: 0.8 }));
+    this.chorroFondo.rotation.x = -Math.PI / 2 - 0.25;
+    this.chorroFondo.position.set(xr - 1.8, yb + 0.6, zPie + 1.4);
+    this.chorroFondo.visible = false;
+    g.add(this.chorroFondo);
+    // Torre de toma, tubería forzada y casa de máquinas en la orilla este
+    const xT = xr + 3.6;
+    const torre = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.9, Hu + 1.2, 12), concreto);
+    torre.position.set(xT, yb + (Hu + 1.2) / 2 - 0.2, zA - 1.6);
+    g.add(torre);
+    const xC = xr + 7.5;
+    const zC = zPie + 2.5;
+    const yS = alturaEn(xC, zC);
+    const casa = caja(4.2, 2.6, 3.4, 0xd8d2c4);
+    casa.position.set(xC, yS + 1.3, zC);
+    const techo = caja(4.6, 0.35, 3.8, COLOR.techo);
+    techo.position.set(xC, yS + 2.75, zC);
+    g.add(casa, techo);
+    const tuberia = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(xT, yb + 0.35 * Hu, zA - 1.0),
+      new THREE.Vector3(xT + 0.4, yb + 0.3 * Hu, zA + 1.0),
+      new THREE.Vector3(xC - 2.6, Math.max(yb + 1.2, yS + 0.9), zPie - 0.6),
+      new THREE.Vector3(xC - 1.8, yS + 0.9, zC),
+    ], false, 'centripetal');
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(tuberia, 40, 0.38, 10, false), new THREE.MeshStandardMaterial({ color: 0x4a5a61, roughness: 0.5, metalness: 0.4 })));
+    // Subestación junto a la casa de máquinas
+    const sub = caja(2.4, 0.25, 2.4, 0x9aa1a3);
+    sub.position.set(xC + 4.2, alturaEn(xC + 4.2, zC) + 0.12, zC);
+    const trafo = caja(1.0, 1.2, 1.0, 0x5d6b70);
+    trafo.position.set(xC + 4.2, alturaEn(xC + 4.2, zC) + 0.85, zC);
+    g.add(sub, trafo);
+    this.posCentral = new THREE.Vector3(xC + 2.6, yS + 3.6, zC);
+    this.posPresa = new THREE.Vector3(xr, yC + 2.6, zA);
+    // Embalse: espejo de agua horizontal aguas arriba de la presa (el terreno tapa lo que queda debajo)
+    const texE = this.texMar.clone();
+    texE.repeat.set(10, 10);
+    texE.needsUpdate = true;
+    this.texEmbalse = texE;
+    const embalse = new THREE.Mesh(
+      new THREE.PlaneGeometry(110, 110, 1, 1),
+      new THREE.MeshStandardMaterial({ map: texE, color: 0x6fb4d2, roughness: 0.25, metalness: 0.05, transparent: true, opacity: 0.94 }),
+    );
+    embalse.rotation.x = -Math.PI / 2;
+    embalse.position.set(xr, yb, zA - 55);
+    embalse.userData.tab = 'represa';
+    embalse.renderOrder = 2;
+    this.embalse = embalse;
+    g.add(embalse);
+    this.indexar(g);
+  }
+
+  /** Recorrido por la ladera este, de la presa a la ciudad: puntos {x, z} cada ~2 unidades. */
+  recorrido(d, inicio, fin) {
+    const z0 = Z_PRESA;
+    const ctrl = [inicio, new THREE.Vector3(xRioEn(z0 + 22) + d * 0.7, 0, z0 + 22)];
+    for (let z = z0 + 45; z < -135; z += 30) ctrl.push(new THREE.Vector3(xRioEn(z) + d, 0, z));
+    ctrl.push(new THREE.Vector3(xRioEn(-118) + d, 0, -118), ...fin);
+    const curva = new THREE.CatmullRomCurve3(ctrl, false, 'centripetal');
+    const n = Math.round(curva.getLength() / 2);
+    return curva.getSpacedPoints(n);
+  }
+
+  /** Línea eléctrica (torres y cables) y tubería por gravedad con sus cámaras de quiebre. */
+  construirRutas() {
+    const g = this.grupos.rutas;
+    g.children.slice().forEach((o) => { g.remove(o); liberar(o); });
+    const gp = this.presa;
+    const rep = this.r.represa;
+    const zC = gp.zPie + 2.5;
+    // Línea: de la subestación de la central a la de la ciudad
+    const linea = this.recorrido(46, new THREE.Vector3(gp.xr + 11.7, 0, zC), [new THREE.Vector3(30, 0, -62), new THREE.Vector3(46, 0, -30), new THREE.Vector3(51, 0, -17)]);
+    const largo = (k) => (k ? linea[k].distanceTo(linea[k - 1]) : 0);
+    const torres = [0];
+    let acum = 0;
+    for (let k = 1; k < linea.length; k++) {
+      acum += largo(k);
+      if (acum >= 15 || k === linea.length - 1) { torres.push(k); acum = 0; }
+    }
+    const metal = new THREE.MeshStandardMaterial({ color: 0x6d7578, roughness: 0.6, metalness: 0.4, flatShading: true });
+    const geoT = new THREE.CylinderGeometry(0.12, 0.55, 4.6, 4);
+    const geoB = new THREE.BoxGeometry(2.8, 0.14, 0.14);
+    const mT = new THREE.InstancedMesh(geoT, metal, torres.length);
+    const mB = new THREE.InstancedMesh(geoB, metal, torres.length);
+    const aux = new THREE.Object3D();
+    const puntas = [];
+    torres.forEach((k, i) => {
+      const p = linea[k];
+      const q = linea[Math.min(linea.length - 1, k + 1)];
+      const r0 = linea[Math.max(0, k - 1)];
+      const ang = Math.atan2(q.x - r0.x, q.z - r0.z);
+      const y = alturaEn(p.x, p.z);
+      aux.position.set(p.x, y + 2.3, p.z);
+      aux.rotation.set(0, ang, 0);
+      aux.scale.set(1, 1, 1);
+      aux.updateMatrix();
+      mT.setMatrixAt(i, aux.matrix);
+      aux.position.set(p.x, y + 4.2, p.z);
+      aux.updateMatrix();
+      mB.setMatrixAt(i, aux.matrix);
+      // Tres conductores: los extremos de la cruceta y la punta de la torre
+      const cx = Math.cos(ang);
+      const sx = -Math.sin(ang);
+      puntas.push([
+        new THREE.Vector3(p.x + 1.3 * cx, y + 4.1, p.z + 1.3 * sx),
+        new THREE.Vector3(p.x - 1.3 * cx, y + 4.1, p.z - 1.3 * sx),
+        new THREE.Vector3(p.x, y + 4.75, p.z),
+      ]);
+    });
+    mT.computeBoundingSphere();
+    mB.computeBoundingSphere();
+    g.add(mT, mB);
+    const seg = [];
+    for (let i = 0; i < puntas.length - 1; i++) {
+      for (let c = 0; c < 3; c++) {
+        const a = puntas[i][c];
+        const b = puntas[i + 1][c];
+        const flecha = 0.35 + 0.025 * a.distanceTo(b);
+        let prev = a;
+        for (let k = 1; k <= 8; k++) {
+          const u = k / 8;
+          const pt = new THREE.Vector3().lerpVectors(a, b, u);
+          pt.y -= 4 * flecha * u * (1 - u);
+          seg.push(prev.x, prev.y, prev.z, pt.x, pt.y, pt.z);
+          prev = pt;
+        }
+      }
+    }
+    const geoC = new THREE.BufferGeometry();
+    geoC.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
+    g.add(new THREE.LineSegments(geoC, new THREE.LineBasicMaterial({ color: 0x30383b })));
+    // Subestación de la ciudad
+    const fin = linea[linea.length - 1];
+    const subC = caja(3.2, 0.25, 3.2, 0x9aa1a3);
+    subC.position.set(fin.x + 1.5, alturaEn(fin.x + 1.5, fin.z) + 0.12, fin.z);
+    const trafoC = caja(1.2, 1.4, 1.2, 0x5d6b70);
+    trafoC.position.set(fin.x + 1.5, alturaEn(fin.x + 1.5, fin.z) + 0.95, fin.z);
+    g.add(subC, trafoC);
+    // Tubería por gravedad: del pie de la presa al tanque de la ciudad, sobre el terreno
+    const rT = this.radioTanque();
+    const tubo = this.recorrido(38, new THREE.Vector3(gp.xr + 5, 0, gp.zPie + 0.5), [new THREE.Vector3(-6, 0, -48), new THREE.Vector3(-1.5, 0, -rT - 2.5), new THREE.Vector3(0, 0, -rT - 0.4)]);
+    const ptsT = tubo.map((q, k) => new THREE.Vector3(q.x, (k === tubo.length - 1 ? 38 * VS + 0.6 : alturaEn(q.x, q.z) + 0.38), q.z));
+    const curvaT = new THREE.CatmullRomCurve3(ptsT, false, 'centripetal');
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(curvaT, ptsT.length * 2, 0.34, 8, false), new THREE.MeshStandardMaterial({ color: 0x7c97a3, roughness: 0.5, metalness: 0.2 })));
+    // Cámaras de quiebre de presión repartidas a lo largo de la tubería
+    const nC = Math.min(40, rep.camaras);
+    const concreto = new THREE.MeshStandardMaterial({ color: COLOR.concreto, roughness: 0.85 });
+    for (let k = 1; k <= nC; k++) {
+      const q = curvaT.getPointAt(k / (nC + 1));
+      const cam = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.1, 1.4), concreto);
+      cam.position.set(q.x, alturaEn(q.x, q.z) + 0.5, q.z);
+      g.add(cam);
+    }
+    this.posLinea = puntas[Math.min(3, puntas.length - 1)][2].clone().add(new THREE.Vector3(0, 1.4, 0));
+    this.posLineaCuenca = puntas[Math.round(0.4 * (puntas.length - 1))][2].clone().add(new THREE.Vector3(0, 1.4, 0));
+    const qT = curvaT.getPointAt(0.05);
+    this.posTuberia = new THREE.Vector3(qT.x, alturaEn(qT.x, qT.z) + 1.6, qT.z);
+    this.corredores = [...linea, ...tubo];
+    this.despejarArboles();
+    this.indexar(g);
+  }
+
+  /** Sin árboles bajo el agua del embalse, en el sitio de la presa y a lo largo de la línea y la tubería. */
+  despejarArboles() {
+    const gp = this.presa;
+    const rutas = this.corredores ?? [];
+    const aux = new THREE.Object3D();
+    for (const { m, grupo } of this.arbolesCuenca ?? []) {
+      grupo.forEach((a, k) => {
+        let fuera = false;
+        if (gp) {
+          if (a.z > gp.zA - 110 && a.z < gp.zA + 0.5 && a.y < gp.yC + 0.4 && Math.abs(a.x - gp.xr) < 70) fuera = true;
+          if (a.z > gp.zA - 3 && a.z < gp.zPie + 9 && a.x > gp.xr - 8 && a.x < gp.xr + 20) fuera = true;
+        }
+        for (let i = 0; !fuera && i < rutas.length; i++) {
+          if (Math.abs(rutas[i].x - a.x) < 2.2 && Math.abs(rutas[i].z - a.z) < 2.2) fuera = true;
+        }
+        aux.position.set(a.x, a.y + a.h / 2 - 0.15, a.z);
+        aux.scale.set(fuera ? 1e-4 : a.r, fuera ? 1e-4 : a.h, fuera ? 1e-4 : a.r);
+        aux.updateMatrix();
+        m.setMatrixAt(k, aux.matrix);
+      });
+      m.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  /** Agua sobre la vega del cultivo de la llanura (creciente del río o desborde del arroyo). */
+  construirVega() {
+    const m = 2 * VEGA.borde + 3;
+    const geo = new THREE.PlaneGeometry(VEGA.x1 - VEGA.x0 + m, VEGA.z1 - VEGA.z0 + m);
+    geo.rotateX(-Math.PI / 2);
+    this.aguaVega = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x8a8060, roughness: 0.3, metalness: 0.05, transparent: true, opacity: 0.88 }));
+    this.aguaVega.position.set((VEGA.x0 + VEGA.x1) / 2, Y_VEGA, (VEGA.z0 + VEGA.z1) / 2);
+    this.aguaVega.renderOrder = 2;
+    this.aguaVega.visible = false;
+    this.scene.add(this.aguaVega);
+  }
+
   // ── Cuenca aguas arriba: valle, río que baja de la montaña y zonas ───────
   terrenoCuenca() {
     const arena = new THREE.Color(0xcdbb8f);
@@ -2407,10 +2756,12 @@ export class Escena {
     const geoArbol = new THREE.ConeGeometry(1, 1, 6);
     const matArbol = new THREE.MeshStandardMaterial({ color: 0x3d5c35, roughness: 0.9, flatShading: true });
     const aux = new THREE.Object3D();
+    this.arbolesCuenca = [];
     for (let t = 0; t < TRAMOS; t++) {
       const grupo = arboles.filter((a) => a.z >= limites[t] && a.z < limites[t] + largo);
       if (!grupo.length) continue;
       const m = new THREE.InstancedMesh(geoArbol, matArbol, grupo.length);
+      this.arbolesCuenca.push({ m, grupo });
       grupo.forEach((a, k) => {
         aux.position.set(a.x, a.y + a.h / 2 - 0.15, a.z);
         aux.scale.set(a.r, a.h, a.r);
@@ -2516,6 +2867,8 @@ export class Escena {
       }
       return c.copy(base).lerp(sucio, 0.8 * f);
     };
+    // El agua de la creciente sobre la vega tiene el color del río en la ciudad
+    if (this.aguaVega) colorEn(30, this.aguaVega.material.color);
     const c = new THREE.Color();
     // Río de la ciudad: plano girado (y local = −z) con filas cada 2 unidades
     const geo = this.rioMalla.geometry;
@@ -2551,13 +2904,32 @@ export class Escena {
       return { target: V(-29, 5, -156), pos: V(-209, 352, 79) };
     }
     if (nombre === 'acuifero') {
-      // De frente al corte: del terreno (con el río y el pozo) hasta un poco de roca
-      const yFondo = this.corte?.yFondo ?? -12;
-      const arriba = NIVEL_CALLE + 6;
+      // De frente al corte: del terreno (con el río y el pozo) hasta un poco de roca. En el
+      // valle, lo que queda aguas abajo del corte se recorta para que no tape la vista.
+      const c = this.corte;
+      const yFondo = c?.yFondo ?? -12;
+      const arriba = c?.arriba ?? NIVEL_CALLE + 6;
       const abajo = yFondo - 3;
-      const dist = Math.max(50, ((arriba - abajo) / 2 / Math.tan((19 * Math.PI) / 180)) * 1.1);
-      const target = V(-26, (arriba + abajo) / 2, Z_CORTE);
+      const dist = Math.max(50, ((arriba - abajo) / 2 / Math.tan((19 * Math.PI) / 180)) * 1.1) * (c?.lejos ?? 1);
+      const target = V(c?.xMira ?? -26, (arriba + abajo) / 2, c?.zc ?? Z_CORTE);
       return { target, pos: target.clone().add(V(4, 0.22 * dist, dist)) };
+    }
+    if (nombre === 'represa') {
+      // La presa vista desde aguas abajo, con el embalse detrás, la central y el arranque de la línea
+      const gp = this.presa ?? { xr: xRioEn(Z_PRESA), yb: lechoEn(Z_PRESA), Hu: 10, z0: Z_PRESA };
+      const target = V(gp.xr + 4, gp.yb + 0.5 * gp.Hu, gp.z0 - 8);
+      const pos = target.clone().add(V(34, 36, 78));
+      const q = new THREE.Vector3();
+      for (let n = 0; n < 40; n++) {
+        let tapa = false;
+        for (let k = 2; k <= 12; k++) {
+          q.lerpVectors(target, pos, k / 12);
+          if (q.y < alturaEn(q.x, q.z) + 2.5) { tapa = true; break; }
+        }
+        if (!tapa) break;
+        pos.y += 3;
+      }
+      return { target, pos };
     }
     if (nombre === 'riego') {
       const s = SITIOS[this.p?.zonaRiego] ?? SITIOS.baja;
@@ -2588,6 +2960,7 @@ export class Escena {
   irAVista(nombre, inmediato = false) {
     this.vista = nombre;
     if (nombre === 'riego') this.zonaVista = this.p?.zonaRiego;
+    if (nombre === 'acuifero') this.zonaCorteVista = this.r?.acuifero.zona;
     if (!this.listo) return;
     const v = this.calcularVista(nombre);
     const lejos = v.sinLejos ? 1 : this.lejosPrevio || 1;
@@ -2608,7 +2981,7 @@ export class Escena {
   /** Vista que corresponde a la pestaña activa. */
   vistaDePestana(tab) {
     if (tab === 'bombas') return this.p?.bombaAnalisis === 'riego' ? 'riego' : 'general';
-    return { rio: 'cuenca', riego: 'riego', acuifero: 'acuifero' }[tab] ?? 'general';
+    return { rio: 'cuenca', represa: 'represa', riego: 'riego', huella: 'riego', acuifero: 'acuifero' }[tab] ?? 'general';
   }
 
   pasoVuelo() {
@@ -2639,6 +3012,7 @@ export class Escena {
       riego: enCiudadR ? ['general', 'cuenca', 'riego'] : ['cuenca', 'riego'],
       bombaRiego: enCiudadR ? ['general', 'riego'] : ['riego'],
       zonaAlta: ['cuenca'], zonaMedia: ['cuenca'], zonaBaja: ['cuenca'],
+      represa: ['cuenca', 'represa'], central: ['represa'], linea: ['cuenca', 'represa'], tuberiaPresa: ['represa'],
       corteRio: ['acuifero'], corteNivel: ['acuifero'], corteSuelo: ['acuifero'], corteArcilla: ['acuifero'],
       corteAcuifero: ['acuifero'], corteRoca: ['acuifero'], pozo: ['acuifero'], corteFlujo: ['acuifero'],
     };
@@ -2650,6 +3024,9 @@ export class Escena {
       ev.obj.center.set(este ? 0 : 1, 0.5);
       ev.obj.position.copy(este ? this.posVertimiento : this.posVertimientoO);
     }
+    // La línea se rotula junto a la presa en la vista Represa y a media ladera en la Cuenca
+    const el = this.etiquetas.linea;
+    if (el && this.posLinea) el.obj.position.copy(vista === 'represa' ? this.posLinea : this.posLineaCuenca);
     for (const [id, e] of Object.entries(this.etiquetas)) {
       let ver = (reglas[id] ?? ['general']).includes(vista);
       if (id === 'vertimiento') ver = ver && Boolean(cal?.inicio);
@@ -2659,38 +3036,65 @@ export class Escena {
   }
 
   // ── Corte del terreno: el agua subterránea vista de frente ───────────────
+  /**
+   * Dónde se dibuja el corte. En la zona baja, en el frente de la escena (la llanura de la
+   * ciudad); en la alta y la media, de través al valle, justo aguas abajo del lote de esa
+   * zona: el resto de la escena aguas abajo se recorta mientras se mira el corte.
+   */
+  sitioCorte(zona) {
+    if (zona !== 'alta' && zona !== 'media') {
+      return { zona: 'baja', zc: Z_CORTE + 0.02, xRio: X_RIO, x0: -115, x1: 125, tope: (x) => alturaTerreno(x, Z_CORTE), Y: (c) => c * VS, costa: 57 };
+    }
+    const s = SITIOS[zona];
+    const zc = s.z + s.semiZ + 3;
+    const yL = lechoEn(zc);
+    const xr = xRioEn(zc);
+    return { zona, zc: zc + 0.02, xRio: xr, x0: Math.round(xr) - 70, x1: Math.round(xr) + 70, tope: (x) => alturaEn(x, zc), Y: (c) => yL + (c - R.CAUCE.fondo) * VS, costa: null };
+  }
+
   construirCorte() {
     const g = this.grupos.corte;
     g.children.slice().forEach((o) => { g.remove(o); liberar(o); });
     const a = this.r.acuifero;
     const est = a.est;
     const p = this.p;
-    const zc = Z_CORTE + 0.02;
-    const yRio = this.yRio ?? Y_RIO;
+    const sc = this.sitioCorte(a.zona);
+    const valle = sc.zona !== 'baja';
+    const zc = sc.zc;
+    const Y = sc.Y;
+    const yRio = valle ? Y(a.hRio) : (this.yRio ?? Y_RIO);
     const xs = [];
-    for (let x = -115; x <= 125; x += 1) xs.push(x);
-    const tope = xs.map((x) => alturaTerreno(x, Z_CORTE));
+    for (let x = sc.x0; x <= sc.x1; x += 1) xs.push(x);
+    const tope = xs.map((x) => sc.tope(x));
     // Orillas del río en el corte y escala horizontal del acuífero (m por unidad)
-    let xE = X_RIO;
-    while (xE < X_RIO + 12 && alturaTerreno(xE, Z_CORTE) < yRio) xE += 0.25;
-    let xO = X_RIO;
-    while (xO > X_RIO - 12 && alturaTerreno(xO, Z_CORTE) < yRio) xO -= 0.25;
-    const XW = -20;                                   // pozo en la llanura, al este del río
+    let xE = sc.xRio;
+    while (xE < sc.xRio + 12 && sc.tope(xE) < yRio) xE += 0.25;
+    let xO = sc.xRio;
+    while (xO > sc.xRio - 12 && sc.tope(xO) < yRio) xO -= 0.25;
+    const XW = valle ? xE + 10 : -20;                // pozo al este del río
     const mPorU = a.L / Math.max(1, XW - xE);
-    const COSTA = 57;
+    const COSTA = sc.costa;
     const nivelCota = (x) => {
       if (x >= xE) {
         const c = A.nivelConPozo(a, (x - xE) * mPorU);
-        return x > COSTA ? c * (1 - suave((x - COSTA) / 6)) : c;
+        return COSTA !== null && x > COSTA ? c * (1 - suave((x - COSTA) / 6)) : c;
       }
       if (x <= xO) return A.nivelNatural(a, (xO - x) * mPorU);
       return a.hRio;
     };
-    const Y = (cota) => cota * VS;
     const yFondo = Y(est.fondo);
-    const yRoca = Math.min(yFondo - 6, -24);
+    const yRoca = valle ? yFondo - 16 : Math.min(yFondo - 6, -24);
     const libre = !est.tipo.capa;
-    const nivelY = xs.map((x) => Math.max(yFondo, Y(nivelCota(x))));
+    // En el valle, el aluvión llena el fondo en forma de artesa: a los lados queda la roca de las laderas
+    const semiArriba = valle ? Math.max(XW - sc.xRio + 8, semiCauce(zc) + 16) : Infinity;
+    const semiAbajo = valle ? Math.max(semiCauce(zc) + 2, semiArriba - 0.8 * (Y(a.terreno) - yFondo)) : Infinity;
+    const fondoY = xs.map((x, k) => {
+      const d = Math.abs(x - sc.xRio);
+      if (d <= semiAbajo) return Math.min(tope[k], yFondo);
+      if (d >= semiArriba) return tope[k];
+      return Math.min(tope[k], yFondo + (tope[k] - yFondo) * ((d - semiAbajo) / (semiArriba - semiAbajo)));
+    });
+    const nivelY = xs.map((x, k) => Math.min(tope[k], Math.max(fondoY[k], Y(nivelCota(x)))));
     // Franja vertical entre dos líneas, con color propio y un poco de grano
     const franja = (arriba, abajo, color, grano = 0.06) => {
       const base = new THREE.Color(color);
@@ -2720,21 +3124,22 @@ export class Escena {
     const colorAcu = COLOR_ACUIFERO[p.materialAcuifero] ?? 0x9dbcc8;
     const colorSeco = new THREE.Color(colorAcu).lerp(new THREE.Color(colorSuelo), 0.7).getHex();
     const rocaY = xs.map(() => yRoca);
-    const fondoY = xs.map((_, k) => Math.min(tope[k], yFondo));
-    franja(fondoY, rocaY, 0x6f6a62, 0.12);                                  // roca
+    franja(fondoY, rocaY, 0x6f6a62, 0.12);                                  // roca (y las laderas del valle)
     if (libre) {
-      franja(nivelY.map((y, k) => Math.min(y, tope[k])), fondoY, colorAcu);  // acuífero saturado
+      franja(nivelY, fondoY, colorAcu);                                      // acuífero saturado
       franja(tope, nivelY, colorSeco);                                       // zona no saturada
     } else {
-      const techo = xs.map((_, k) => Math.min(tope[k], Y(est.techoAcuifero)));
-      const baseSuelo = xs.map((_, k) => Math.min(tope[k], Y(est.nivel)));
+      const techo = xs.map((_, k) => Math.min(tope[k], Math.max(fondoY[k], Y(est.techoAcuifero))));
+      const baseSuelo = xs.map((_, k) => Math.min(tope[k], Math.max(fondoY[k], Y(est.nivel))));
       franja(techo, fondoY, colorAcu);                                       // acuífero confinado (lleno)
       franja(baseSuelo, techo, 0x8c8278, 0.1);                               // capa de arcilla
       franja(tope, baseSuelo, colorSuelo);                                   // suelo
     }
-    // Agua del río y del mar en el corte
+    // Agua del río (y del mar, en la llanura) en el corte
     const aguaMat = new THREE.MeshBasicMaterial({ color: COLOR.agua, transparent: true, opacity: 0.8, side: THREE.DoubleSide });
-    for (const [x0, x1, yA] of [[xO - 1, xE + 1, yRio], [COSTA - 2, 125, 0]]) {
+    const aguas = [[xO - 1, xE + 1, yRio]];
+    if (COSTA !== null) aguas.push([COSTA - 2, sc.x1, 0]);
+    for (const [x0, x1, yA] of aguas) {
       const pts = [];
       xs.forEach((x, k) => { if (x >= x0 && x <= x1 && tope[k] < yA) pts.push([x, tope[k]]); });
       if (pts.length < 2) continue;
@@ -2751,6 +3156,7 @@ export class Escena {
     for (let k = 0; k < xs.length - 1; k++) {
       if (!libre && k % 3 === 2) continue;
       if (xs[k] > xO - 0.5 && xs[k] < xE + 0.5) continue;
+      if (nivelY[k] <= fondoY[k] + 0.02 || nivelY[k + 1] <= fondoY[k + 1] + 0.02) continue;
       const y0 = nivelY[k];
       const y1 = nivelY[k + 1];
       const geo = new THREE.BufferGeometry();
@@ -2760,7 +3166,7 @@ export class Escena {
     }
     // Pozo cortado a la mitad: paredes de la tubería, filtro en el acuífero, agua adentro,
     // bomba sumergible con su tubo de subida y el cabezal en la superficie
-    const yTopeW = alturaTerreno(XW, Z_CORTE);
+    const yTopeW = sc.tope(XW);
     const yFondoW = yFondo + 0.4;
     const yAguaPozo = Math.max(yFondoW + 0.2, Y(Math.max(est.fondo, a.Q > 0 ? a.nivelPozo : A.nivelNatural(a, a.L))));
     const plano = (x0, x1, y0, y1, color, dz) => {
@@ -2771,7 +3177,7 @@ export class Escena {
     };
     const yArriba = yTopeW + 0.7;
     plano(XW - 0.45, XW + 0.45, yFondoW, yArriba, 0x33444b, 0);                // hueco del pozo
-    plano(XW - 0.4, XW + 0.4, yFondoW, yAguaPozo, COLOR.agua, 0.005);          // agua dentro del pozo
+    plano(XW - 0.4, XW + 0.4, yFondoW, Math.min(yAguaPozo, yArriba), COLOR.agua, 0.005);   // agua dentro del pozo
     plano(XW - 0.55, XW - 0.45, yFondoW, yArriba, 0xdfe3e3, 0.01);             // paredes de la tubería
     plano(XW + 0.45, XW + 0.55, yFondoW, yArriba, 0xdfe3e3, 0.01);
     const yFiltro = libre ? Math.min(Y(est.nivel), yTopeW) : Y(est.techoAcuifero);
@@ -2784,7 +3190,7 @@ export class Escena {
       plano(XW - 0.06, XW + 0.06, yFondoW + 1.4, yArriba, 0x56646a, 0.02);       // tubo de subida
     }
     const cabezal = caja(1.4, 0.8, 1.4, 0x5d6b70);
-    cabezal.position.set(XW, yTopeW + 0.9, Z_CORTE - 0.8);
+    cabezal.position.set(XW, yTopeW + 0.9, zc - 0.82);
     g.add(cabezal);
     // Flechas del flujo subterráneo en el corte
     const yMed = (libre ? (Y(est.nivel) + yFondo) / 2 : (Y(est.techoAcuifero) + yFondo) / 2);
@@ -2797,8 +3203,8 @@ export class Escena {
     };
     const haciaPozo = a.via !== 'ninguna';
     for (const f of [0.3, 0.65]) flecha(xE + f * (XW - xE), haciaPozo ? 1 : -1);
-    if (a.Q > 0) for (const dx of [5, 11]) flecha(XW + dx, -1);
-    for (const dx of [6, 14]) flecha(xO - dx, a.regimen === 'ganador' ? 1 : -1);
+    if (a.Q > 0) for (const dx of [5, 11]) if (!valle || dx < semiAbajo - (XW - sc.xRio)) flecha(XW + dx, -1);
+    for (const dx of [6, 14]) if (!valle || dx + (sc.xRio - xO) < semiAbajo) flecha(xO - dx, a.regimen === 'ganador' ? 1 : -1);
     // Agua del río contaminada que entra al acuífero: la mancha muestra hasta dónde llega en
     // 50 días. Con capa de arcilla, primero tiene que cruzarla bajo el cauce.
     const contaminado = a.agua.CF > p.cfMax || a.agua.NO3 > 10;
@@ -2808,7 +3214,6 @@ export class Escena {
       const fCapa = libre ? 1 : Math.min(1, T / Math.max(1e-9, a.tCapa));
       const s = new THREE.Shape();
       if (fCapa < 1) {
-        // No alcanza a cruzar la arcilla: la capa protege el acuífero
         const yB = yLecho - fCapa * (yLecho - Y(est.techoAcuifero));
         s.moveTo(xO + 1.5, yLecho);
         s.lineTo(xE - 0.5, yLecho);
@@ -2833,23 +3238,30 @@ export class Escena {
     gotas.frustumCulled = false;
     g.add(gotas);
     const yTechoSat = libre ? null : Y(est.techoAcuifero);
+    const xMinG = valle ? sc.xRio - semiAbajo + 1 : xO - 30;
+    const xMaxG = valle ? sc.xRio + semiAbajo - 1 : 55;
     this.corte = {
-      gotas, nG, xE, xO, XW, yFondo, yRoca, zc, nivelY, xs, yTechoSat, a,
-      x: new Float32Array(nG).map(() => xO - 25 + Math.random() * 90),
+      gotas, nG, xE, xO, XW, yFondo, yRoca, zc, nivelY, fondoY, xs, x0: sc.x0, yTechoSat, a, valle, xMinG, xMaxG,
+      x: new Float32Array(nG).map(() => xMinG + Math.random() * (xMaxG - xMinG)),
       fy: new Float32Array(nG).map(() => 0.1 + Math.random() * 0.8),
       vel: Math.min(1.6, Math.max(0.25, 0.35 * Math.sqrt(Math.max(a.vNat, a.vMedia) + 0.05) * 3)),
+      arriba: valle ? Y(a.terreno) + 6 : NIVEL_CALLE + 6,
+      xMira: valle ? sc.xRio + 6 : -26,
+      lejos: valle ? 1.25 : 1,
     };
     // Posiciones de los rótulos (las capas, a la derecha del pozo)
-    const nivelEn = (x) => nivelY[Math.max(0, Math.min(xs.length - 1, Math.round(x) + 115))];
+    const nivelEn = (x) => nivelY[Math.max(0, Math.min(xs.length - 1, Math.round(x - sc.x0)))];
     const xCapas = XW + 3.2;
+    const yTerreno = Y(a.terreno);
+    const xNivel = valle ? xE + 3 : -29;
     this.posCorte = {
-      rio: new THREE.Vector3(X_RIO, yRio + 1.4, zc + 0.3),
-      nivel: new THREE.Vector3(-29, nivelEn(-29) + 0.3, zc + 0.3),
-      suelo: new THREE.Vector3(xCapas, libre ? (Y(A.COTA_LLANURA) + nivelEn(xCapas)) / 2 : (Y(A.COTA_LLANURA) + Y(est.nivel)) / 2, zc + 0.3),
+      rio: new THREE.Vector3(sc.xRio, yRio + 1.4, zc + 0.3),
+      nivel: new THREE.Vector3(xNivel, nivelEn(xNivel) + 0.3, zc + 0.3),
+      suelo: new THREE.Vector3(xCapas, libre ? (yTerreno + nivelEn(xCapas)) / 2 : (yTerreno + Y(est.nivel)) / 2, zc + 0.3),
       arcilla: new THREE.Vector3(xCapas, (Y(est.nivel) + Y(est.techoAcuifero)) / 2, zc + 0.3),
       acuifero: new THREE.Vector3(xCapas, Math.max(yFondo + 1.6, yMed - 3), zc + 0.3),
       roca: new THREE.Vector3(xCapas, (yFondo + Math.max(yRoca, yFondo - 8)) / 2, zc + 0.3),
-      pozo: new THREE.Vector3(XW, yTopeW + 1.9, Z_CORTE - 0.8),
+      pozo: new THREE.Vector3(XW, yTopeW + 1.9, zc - 0.82),
       flujo: new THREE.Vector3((xE + XW) / 2, yMed - 1.0, zc + 0.3),
     };
     this.indexar(g);
@@ -2873,12 +3285,13 @@ export class Escena {
       else dir = a.regimen === 'ganador' ? 1 : -1;
       x += dir * c.vel * dt;
       if (Math.abs(x - c.XW) < 0.5 && a.Q > 0) x = a.via !== 'ninguna' ? c.xE + Math.random() * 2 : c.XW + radioCono * Math.random();
-      if (x < c.xO - 30 || x > 55) x = c.xO - 25 + Math.random() * 80;
+      if (x < c.xMinG || x > c.xMaxG) x = c.xMinG + Math.random() * (c.xMaxG - c.xMinG);
       if (x > c.xO && x < c.xE) x = dir > 0 ? c.xE + 0.2 : c.xO - 0.2;
       c.x[i] = x;
-      const k = Math.max(0, Math.min(c.xs.length - 1, Math.round(x + 115)));
-      const arriba = c.yTechoSat ?? c.nivelY[k];
-      aux.position.set(x, c.yFondo + 0.3 + c.fy[i] * Math.max(0.2, arriba - c.yFondo - 0.6), c.zc + 0.08);
+      const k = Math.max(0, Math.min(c.xs.length - 1, Math.round(x - c.x0)));
+      const abajo = c.fondoY[k];
+      const arriba = Math.max(abajo + 0.6, c.yTechoSat ?? c.nivelY[k]);
+      aux.position.set(x, abajo + 0.3 + c.fy[i] * Math.max(0.2, arriba - abajo - 0.6), c.zc + 0.08);
       aux.updateMatrix();
       c.gotas.setMatrixAt(i, aux.matrix);
     }
@@ -2901,8 +3314,17 @@ export class Escena {
       this.camara.far = lejos;
       this.camara.updateProjectionMatrix();
     }
+    // Corte del acuífero en el valle: se recorta lo que queda aguas abajo
+    const recortar = this.vista === 'acuifero' && Boolean(this.corte?.valle);
+    if (recortar) this.planoCorte.constant = this.corte.zc + 0.06;
+    if (recortar !== this.recortando) {
+      this.renderer.clippingPlanes = recortar ? [this.planoCorte] : [];
+      this.recortando = recortar;
+    }
     if (this.r && this.p) {
       const r = this.r;
+      if (this.texAliviadero) this.texAliviadero.offset.y -= dt * 0.9;
+      if (this.texEmbalse) this.texEmbalse.offset.x += dt * 0.004;
       this.texRio.offset.y += dt * 0.08;               // el río baja de la Sierra hacia +z
       this.texRioCuenca.offset.y += dt * 0.11;         // aguas arriba corre más rápido
       this.texMar.offset.x += dt * 0.006;

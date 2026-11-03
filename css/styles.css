@@ -269,7 +269,7 @@ body {
 .pestanas {
   position: sticky; top: 0; z-index: 2;
   display: grid;
-  grid-template-columns: repeat(6, 1fr);   /* once pestañas en dos filas */
+  grid-template-columns: repeat(7, 1fr);   /* trece pestañas en dos filas */
   padding: 0 4px;
   flex-shrink: 0;   /* con overflow, un hijo de flex se podría encoger hasta 0 */
   overflow-x: auto;
@@ -601,3 +601,10 @@ table.comparar td.mal { color: var(--alerta); font-weight: 600; }
 table.comparar td.mal small, table.comparar td.bien small { font-weight: 400; }
 table.comparar td.tenue { color: var(--tinta-2); }
 .nota-tabla { font-size: 12.5px; color: var(--tinta-2); margin: 4px 0 10px; max-width: 62ch; }
+
+/* Huella hídrica: barra con la parte verde, azul y gris de cada cultivo */
+.barra-hh { display: flex; width: 100%; max-width: 120px; height: 6px; margin-top: 4px; border-radius: 3px; overflow: hidden; background: var(--linea); }
+.barra-hh i { display: block; height: 100%; }
+.barra-hh .v { background: var(--ok); }
+.barra-hh .a { background: var(--agua); }
+.barra-hh .g { background: var(--tinta-2); }

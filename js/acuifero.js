@@ -1,5 +1,5 @@
 /**
- * acuifero.js — El agua subterránea de la zona baja.
+ * acuifero.js — El agua subterránea de las zonas alta, media y baja del río.
  * -----------------------------------------------------------------------
  *  1. Capas del terreno: suelo (zona no saturada), capa de arcilla si el
  *     acuífero es semiconfinado o confinado, acuífero y roca.
@@ -25,6 +25,21 @@ export const MATERIALES_ACUIFERO = {
 };
 
 export const COTA_LLANURA = 4.0;          // cota del terreno de la llanura junto al río [m.s.n.m.]
+
+/**
+ * El acuífero en cada zona del río. banca: altura del terreno junto al río sobre el lecho
+ * [m]; material, espesor y suelo típicos (el panel los propone al cambiar de zona).
+ *  · Alta: aluvión delgado de grava sobre roca, en el fondo del valle.
+ *  · Media: abanico aluvial de arena gruesa y grava, el más permeable y profundo.
+ *  · Baja: la llanura costera, de arena media (los valores base).
+ * En la zona baja las cotas son las de la bocatoma (m.s.n.m.); en las otras se miden
+ * desde un lecho a la cota 1.00 m, igual que en la bocatoma, para compararlas.
+ */
+export const ZONAS_ACUIFERO = {
+  alta: { banca: 2.5, material: 'grava', espesor: 8, suelo: 'grava', tipo: 'libre' },
+  media: { banca: 2.0, material: 'arenaGruesa', espesor: 30, suelo: 'arena', tipo: 'libre' },
+  baja: { banca: COTA_LLANURA - 1, material: 'arena', espesor: 20, suelo: 'arena', tipo: 'semiconfinado' },
+};
 export const L_CONEXION = 150;            // distancia en la que el nivel freático se junta con el río [m]
 export const RADIO_POZO = 0.15;           // radio del pozo [m]
 export const K_COLIFORMES_ACUIFERO = 0.3; // muerte de coliformes en el agua subterránea [1/día]
@@ -50,14 +65,14 @@ export function erfc(x) {
  * capa de arcilla va debajo del suelo; luego el acuífero de espesor b y la roca.
  * nivel: nivel freático (o piezométrico) lejos del río.
  */
-export function estratos(p) {
+export function estratos(p, terreno = COTA_LLANURA) {
   const tipo = R.ACUIFEROS[p.tipoAcuifero] ?? R.ACUIFEROS.libre;
   const d = Math.max(0.1, p.profFreatico);
   const e = tipo.capa ? tipo.capa.espesor : 0;
   const b = Math.max(1, p.espesorAcuifero);
-  const nivel = COTA_LLANURA - d;
+  const nivel = terreno - d;
   const techoAcuifero = nivel - e;
-  return { tipo, d, e, b, terreno: COTA_LLANURA, nivel, baseSuelo: nivel, techoAcuifero, fondo: techoAcuifero - b };
+  return { tipo, d, e, b, terreno, nivel, baseSuelo: nivel, techoAcuifero, fondo: techoAcuifero - b };
 }
 
 /** Radio de influencia de Sichardt iterado con Thiem. Q [m³/s], T [m²/s], K [m/s]. */
@@ -101,9 +116,13 @@ export function curvaLlegada(tViaje, t) {
  */
 export function calcularAcuifero(p, rio) {
   const mat = MATERIALES_ACUIFERO[p.materialAcuifero] ?? MATERIALES_ACUIFERO.arena;
-  const est = estratos(p);
+  // Zona del corte: en la baja, el río de la bocatoma; en las otras, el de esa zona
+  const zona = ZONAS_ACUIFERO[p.zonaAcuifero] ? p.zonaAcuifero : 'baja';
+  const baja = zona === 'baja';
+  const terreno = baja ? COTA_LLANURA : R.CAUCE.fondo + ZONAS_ACUIFERO[zona].banca;
+  const est = estratos(p, terreno);
   const b = est.b;
-  const hRio = p.cotaRio;
+  const hRio = baja ? p.cotaRio : R.CAUCE.fondo + rio.calidad.hid[zona].y;
   const dh = hRio - est.nivel;                         // > 0: el río está más alto que el acuífero
   const regimen = Math.abs(dh) < 0.05 ? 'equilibrio' : (dh > 0 ? 'perdedor' : 'ganador');
   const i = Math.abs(dh) / L_CONEXION;
@@ -133,18 +152,19 @@ export function calcularAcuifero(p, rio) {
   }
   const tViaje = tHoriz + tCapa;
   const llega = Number.isFinite(tViaje);
-  const agua = rio.recarga;
+  const agua = baja ? rio.recarga : R.aguaRecarga(rio.calidad.puntos, zona);
+  const vert = baja ? rio.acu : R.acuifero(p, agua);
   const logs = mat.remocion * L + (capa ? capa.remocion * capa.espesor : 0);
   const CFpozo = llega ? agua.CF * Math.exp(-K_COLIFORMES_ACUIFERO * tViaje) * 10 ** -logs : 0;
   const NO3pozo = llega ? agua.NO3 : NO3_FONDO;
-  const a = { mat, est, b, hRio, dh, regimen, i, K, vNat, qOrilla, Q, T, cono, L, sRio, sMax, seco,
-    tCapa, via, tHoriz, tViaje, llega, agua, logs, CFpozo, NO3pozo, vert: rio.acu };
+  const a = { zona, terreno, mat, est, b, hRio, dh, regimen, i, K, vNat, qOrilla, Q, T, cono, L, sRio, sMax, seco,
+    tCapa, via, tHoriz, tViaje, llega, agua, logs, CFpozo, NO3pozo, vert };
   a.nivelPozo = nivelConPozo(a, L);
   a.vMedia = llega && Number.isFinite(tHoriz) && tHoriz > 0 ? L / tHoriz : 0;
 
   // Revisión: lo que se infiltra desde la superficie y el pozo
   const checks = [];
-  const v = rio.acu;
+  const v = vert;
   R.revisar(checks, `Acuífero: nitratos que se infiltran ${f2(v.NO3)} ≤ 10 mg/L de N`, v.NO3 <= 10,
     'Los nitratos no se degradan en el suelo: tarde o temprano llegan al agua subterránea.');
   R.revisar(checks, `Acuífero: coliformes que llegan al nivel freático ${v.CF < 1 ? f2(v.CF) : R.miles(v.CF)} ≤ 1 NMP/100 mL`, v.CF <= 1,

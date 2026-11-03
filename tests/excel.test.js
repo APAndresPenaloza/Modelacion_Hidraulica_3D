@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inflateRawSync } from 'node:zlib';
 import { crc32, deflate, nombreColumna, crearXlsx } from '../js/excel.js';
-import { Registro, construirHojas, crearLibro, relojSimulado, unirEsquemas } from '../js/datos.js';
+import { Registro, libroRepresa, libroAno, libroHuella, libroCultivos, construirHojas, crearLibro, relojSimulado, unirEsquemas } from '../js/datos.js';
 import * as M from '../js/modelo.js';
 import * as S from '../js/sistema.js';
 
@@ -117,9 +117,14 @@ test('Libro de la simulación: hojas, escenarios y fórmulas del ciclo', () => {
     revision: r.revisionTotal,
     cantidades: r.cantidades.filas,
     perfil: { puntos: r.rio.calidad.puntos, marcas: [{ km: 44, texto: 'Bocatoma' }] },
+    represa: libroRepresa(p, r),
+    ano: libroAno(p, r),
+    huella: libroHuella(p, r),
+    cultivos: libroCultivos(p, r),
   };
   const hojas = construirHojas(datos);
-  assert.deepEqual(hojas.map((h) => h.nombre), ['Resumen', 'Parámetros y resultados', 'Serie de tiempo', 'Arranques y paradas', 'Ciclo y costo', 'Revisión del diseño', 'Cantidades de obra', 'Perfil del río']);
+  assert.deepEqual(hojas.map((h) => h.nombre), ['Resumen', 'Parámetros y resultados', 'Serie de tiempo', 'Arranques y paradas', 'Ciclo y costo', 'Revisión del diseño',
+    'Cantidades de obra', 'Perfil del río', 'Represa y energía', 'Embalse mes a mes', 'Huella hídrica', 'Huella por cultivo']);
   // Una columna por escenario guardado más el estado al exportar
   assert.deepEqual(hojas[1].filas[3].map((c) => c?.v), ['Variable', 'Unidad', 'Base', 'Al exportar']);
   // La fila que solo existe al exportar queda vacía en el escenario guardado
@@ -139,22 +144,26 @@ test('Libro de la simulación: hojas, escenarios y fórmulas del ciclo', () => {
   const Hm = B[12] + (B[7] + B[8]) / 2 - B[11] + B[13];
   const m = (B[15] * B[17] * B[18] * Hm) / (B[14] * B[19] * 3600000);
   assert.ok(Math.abs(m * B[9] * horas * 3600 * 30 + B[16] - r.costo.costo) < 1e-3);
-  // La revisión (acueducto, río, bombas y riego) y las cantidades pasan completas
+  // La revisión (acueducto, río, bombas, riego, represa, huella y acuífero) y las cantidades pasan completas
   assert.equal(hojas[5].filas.length, 4 + r.revisionTotal.length);
   assert.ok(r.revisionTotal.length > r.checks.length);
-  assert.deepEqual([...new Set(hojas[5].filas.slice(4).map((f) => f[0]))], ['Acueducto', 'Río', 'Bombas', 'Riego', 'Acuífero']);
+  assert.deepEqual([...new Set(hojas[5].filas.slice(4).map((f) => f[0]))], ['Acueducto', 'Río', 'Bombas', 'Riego', 'Represa', 'Huella', 'Acuífero']);
   assert.equal(hojas[6].filas.length, 4 + r.cantidades.filas.length);
   // Perfil del río: una fila cada 0.5 km del km 0 al 50, con la bocatoma marcada
   assert.equal(hojas[7].filas.length, 4 + 101);
   assert.equal(hojas[7].filas[4 + 88][8].v, 'Bocatoma');
-  // El libro completo se puede descomprimir y trae las ocho hojas
+  // El libro completo se puede descomprimir y trae las doce hojas
   const zip = leerZip(crearLibro(datos));
   assert.ok(zip['xl/worksheets/sheet5.xml'].includes('<f>PI()*B6^2/4</f>'));
   assert.ok(zip['xl/worksheets/sheet7.xml'].includes('Tubería principal'));
   assert.ok(zip['xl/worksheets/sheet8.xml'].includes('Coliformes fecales'));
+  assert.ok(zip['xl/worksheets/sheet9.xml'].includes('<f>B15*B16*B11*B34*B14/1000</f>'));
+  assert.ok(zip['xl/worksheets/sheet10.xml'].includes('<f>SUM(H5:H16)</f>'));
+  assert.ok(zip['xl/worksheets/sheet11.xml'].includes('<f>ROUNDUP(B27/B34,0)</f>'));
+  assert.ok(zip['xl/worksheets/sheet12.xml'].includes('Café'));
   // En el Resumen, la descripción de cada hoja ocupa B:C y se ajusta (cabe a lo ancho al imprimir)
   const resumen = zip['xl/worksheets/sheet1.xml'];
-  assert.ok(resumen.includes('<mergeCells count="7">'));
+  assert.ok(resumen.includes('<mergeCells count="11">'));
   assert.ok(resumen.indexOf('</sheetData>') < resumen.indexOf('<mergeCells') && resumen.indexOf('<mergeCells') < resumen.indexOf('<pageMargins'));
 });
 
@@ -163,4 +172,50 @@ test('Esquemas: une filas de varios escenarios sin perder el orden', () => {
   const b = [{ clave: '1' }, { clave: '3' }, { clave: '4' }];
   // '3' solo está en b: queda después de su vecina '1' y antes de '4'
   assert.deepEqual(unirEsquemas([a, b]).map((x) => x.clave), ['1', '3', '2', '4']);
+});
+
+test('Hojas de la represa y de la huella: las fórmulas dan lo mismo que el simulador', () => {
+  for (const cambios of [{}, { operacionPresa: 'fijo', Qpresa: 3, tensionLinea: 13.2 }, { cultivo: 'cacao', zonaRiego: 'media', dosisN: 150 }, { lluvia: 'inundacion', cotaRio: 3.7, Qcrecida: 40 }]) {
+    const p = { ...M.PARAMETROS_INICIALES, ...S.PARAMETROS_DISENO, ...cambios };
+    const r = S.calcular(p, { nivel: 4.4, bomba: true, t: 6 * 3600 });
+    const hojas = construirHojas({
+      meta: { fecha: 'hoy', reloj: 'Día 1, 06:00' }, resumen: [], actual: { nombre: 'Al exportar', momento: '', filas: [] }, registro: new Registro(900),
+      ciclo: { automatico: false, alcanza: true }, represa: libroRepresa(p, r), ano: libroAno(p, r), huella: libroHuella(p, r), cultivos: libroCultivos(p, r),
+    });
+    // Valores de la columna B por número de fila de Excel
+    const B = (hoja) => {
+      const o = {};
+      hoja.filas.forEach((f, k) => { const c = f[1]; o[k + 1] = c && typeof c === 'object' ? c.v : c; });
+      return o;
+    };
+    const rp = B(hojas[8]);
+    const Hn = rp[7] - rp[12] - rp[13] * rp[11] ** 2;
+    const Pk = (rp[15] * rp[16] * rp[11] * Hn * rp[14]) / 1000;
+    assert.ok(Math.abs(Pk - r.represa.P / 1000) < 1e-9);
+    assert.ok(Math.abs(rp[35] - Pk) < 1e-9);                              // la caché de la fórmula
+    const I = (Pk * 1000) / (Math.sqrt(3) * rp[17] * 1000 * rp[20]);
+    const Pp = (3 * I * I * rp[19] * rp[18]) / 1000;
+    assert.ok(Math.abs(Pp - r.represa.linea.perdidas / 1000) < 1e-9);
+    const Eent = (Pk - Pp) * 720;
+    assert.ok(Math.abs(Eent - r.represa.Eent) < 1e-6);
+    if (Eent > 0) assert.ok(Math.abs((rp[21] * Pk * 720) / Eent + rp[22] - r.represa.costoPuesto) < 1e-9);
+    assert.ok(Math.abs(rp[8] * rp[7] ** 2 - r.represa.V) < 1e-6);         // V = a·h²
+    // Huella: verde, azul y gris con las celdas de entrada
+    const hu = B(hojas[10]);
+    const hh = r.huella.hh;
+    assert.ok(Math.abs((10 * hu[9]) / hu[8] - hh.verde) < 1e-9);
+    assert.ok(Math.abs((10 * hu[10]) / hu[8] - hh.azul) < 1e-9);
+    assert.ok(Math.abs((hu[12] * hu[11]) / ((hu[13] - hu[14]) / 1000) / hu[8] - hh.gris) < 1e-9);
+    const T = hu[8] * hu[15] * hu[16] * (1 - hu[17]);
+    assert.ok(Math.abs(T - r.huella.produccion) < 1e-9);
+    const viajes = T > 0 ? Math.ceil(T / hu[34]) : 0;
+    assert.equal(viajes, r.huella.carbono.viajes);
+    const kg = viajes * hu[32] * (hu[35] + hu[36]) * hu[33] * hu[37];
+    assert.ok(Math.abs(kg - r.huella.carbono.kgCO2) < 1e-9);
+    // Un año de operación: doce meses y la fila del año con la energía sumada
+    assert.equal(hojas[9].filas.length, 4 + 12 + 1 + 2);
+    assert.ok(Math.abs(hojas[9].filas[16][7].v - r.anoRepresa.Eano) < 1e-6);
+    // Todos los cultivos en la zona y el elegido en las tres zonas
+    assert.equal(hojas[11].filas.filter((f) => typeof f[0] === 'string' && f.length === 10).length, 11 + 3);
+  }
 });

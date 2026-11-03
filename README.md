@@ -4,11 +4,11 @@ Aplicación web interactiva que simula el abastecimiento de agua de un sector de
 
 La escena muestra el régimen del flujo: en las tuberías las partículas se mueven con el perfil de velocidad (parabólico en laminar, casi plano en turbulento) y un hilo de tinta sigue recto o se mezcla. La pestaña Tuberías incluye una animación del experimento de Reynolds con un tubo de vidrio cuyo diámetro y velocidad se pueden cambiar. La pestaña Datos guarda la información de la simulación en un libro de Excel.
 
-Además del acueducto, el simulador modela la cuenca: el río sube y se enturbia con las lluvias, un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos que siguen río abajo por las zonas alta, media y baja y llegan al acuífero, y en la zona que se elija un cultivo se riega con su propia tubería y su propia bomba. Bajo la llanura, el agua subterránea se mueve entre el río y el pozo de una finca. Las estaciones de bombeo se diseñan con su potencia hidráulica, al freno y eléctrica, el motor comercial que se instala y el tipo de bomba que conviene.
+Además del acueducto, el simulador modela la cuenca: el río sube y se enturbia con las lluvias, un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos que siguen río abajo por las zonas alta, media y baja y llegan al acuífero, y en la zona que se elija un cultivo se riega con su propia tubería y su propia bomba. En la zona alta una represa forma un embalse: guarda o suelta agua (y con eso cambia el caudal de las tres zonas), su central produce energía que una línea lleva a la ciudad, y una tubería puede bajar el agua del embalse por gravedad. Se calcula la huella hídrica (verde, azul y gris) de cada cultivo, la huella de carbono de llevar la cosecha a la ciudad y lo que se pierde cuando la creciente del río o el desborde del arroyo inundan el lote. Bajo el valle, en las tres zonas, el agua subterránea se mueve entre el río y el pozo de una finca. Las estaciones de bombeo se diseñan con su potencia hidráulica, al freno y eléctrica, el motor comercial que se instala y el tipo de bomba que conviene.
 
-La escena 3D va del nacimiento del río al mar y tiene cuatro vistas (Ciudad, Cuenca, Cultivo y Acuífero); al cambiar de pestaña, la cámara va sola a la vista que corresponde.
+La escena 3D va del nacimiento del río al mar y tiene cinco vistas (Ciudad, Cuenca, Represa, Cultivo y Acuífero); al cambiar de pestaña, la cámara va sola a la vista que corresponde.
 
-El panel tiene once pestañas, en dos filas: Río, Captación, Bombas, Tuberías, Tanque, Red, Vivienda, Riego, Acuífero, Arroyo y Datos.
+El panel tiene trece pestañas, en dos filas: Río, Represa, Captación, Bombas, Tuberías, Tanque, Red, Vivienda, Riego, Huella, Acuífero, Arroyo y Datos.
 
 Proyecto final de Álgebra y Geometría Analítica, 2026-II. Línea de investigación: Hidráulica de Canales Abiertos y Redes de Acueducto.
 
@@ -26,6 +26,8 @@ js/rio.js             Río y cuenca: curva de descarga, sedimentos, vertimientos
 js/acuifero.js        Agua subterránea: capas, río que gana o pierde agua (Darcy), cono del pozo (Thiem y Sichardt), tiempo de viaje y calidad del pozo
 js/bombas.js          Estaciones de bombeo: potencias, motor comercial, tipos de bomba, curvas, punto de operación y NPSH
 js/riego.js           Riego: evapotranspiración (Hargreaves), cultivos, métodos de riego, caudal, tubería y comparación con la ciudad
+js/represa.js         Represa: embalse (V = a·h²), operación y balance, central (P = ρgQH_nη), pérdidas de la línea, costos y un año mes a mes
+js/huella.js          Huella hídrica verde, azul y gris de los cultivos, CO₂ del transporte a la ciudad y daño por inundación
 js/reynolds.js        Animación del experimento de Reynolds (laminar, transición, turbulento)
 js/datos.js           Registro de la simulación, escenarios y armado del libro de Excel
 js/excel.js           Escritor de archivos .xlsx (XML + ZIP con compresión DEFLATE), sin librerías
@@ -37,7 +39,9 @@ tests/excel.test.js   Pruebas del archivo de Excel (se descomprime con zlib y se
 tests/rio.test.js     Pruebas del río (Manning, captación, mezcla, Streeter-Phelps, sedimentos, acuífero)
 tests/bombas.test.js  Pruebas de las bombas (potencias, motor, curvas, paralelo, NPSH, tipos)
 tests/riego.test.js   Pruebas del riego (Hargreaves, caudal, épocas, métodos, zonas, calidad del agua)
-tests/acuifero.test.js Pruebas del agua subterránea (capas, Darcy, Thiem, tiempo de viaje, curva de llegada)
+tests/acuifero.test.js Pruebas del agua subterránea (capas, Darcy, Thiem, tiempo de viaje, curva de llegada, tres zonas)
+tests/represa.test.js Pruebas de la represa (embalse, operación, central, línea, límites, año mes a mes, costos)
+tests/huella.test.js  Pruebas de la huella hídrica, del carbono del transporte y de la inundación del lote
 ```
 
 Las librerías van incluidas en `lib/` y el Excel se genera con código propio, así que el simulador no depende de ningún CDN.
@@ -90,7 +94,7 @@ Dos interruptores de nivel controlan la bomba: se apaga al llegar al nivel de pa
 
 ## Río y vertimientos (pestaña Río)
 
-- **Nivel y caudal**: la cota de la lámina en la bocatoma da el caudal con la curva de Manning de un cauce de 10 m de ancho (6.35 m³/s en la cota base de 2.50 m). Los escenarios de lluvia (seca, normal, temporada de lluvias y aguacero) fijan la cota y el sedimento; los dos se pueden mover a mano. Si el río baja de la cota 1.75 m (0.15 m sobre el fondo de la rejilla), la bocatoma no capta y la bomba se detiene.
+- **Nivel y caudal**: la cota de la lámina en la bocatoma da el caudal con la curva de Manning de un cauce de 10 m de ancho (6.35 m³/s en la cota base de 2.50 m). Los escenarios de lluvia (seca, normal, temporada de lluvias, aguacero y creciente extraordinaria) fijan la cota y el sedimento; los dos se pueden mover a mano. El control es el río natural: si la represa guarda o suelta agua, la cota en la bocatoma se recalcula con la curva de descarga inversa. Por encima de la cota 3.20 m el río se sale a la vega donde está el cultivo de la llanura. Si el río baja de la cota 1.75 m (0.15 m sobre el fondo de la rejilla), la bocatoma no capta y la bomba se detiene.
 - **Sedimento**: el que entra con el bombeo se reparte por tamaños; el desarenador retiene desde el grano que da la ley de Stokes y con eso se calcula cada cuántos días hay que limpiar la tolva.
 - **Zonas**: alta (montaña, 1 200 m, km 0 a 15), media (piedemonte, 400 m, km 15 a 35) y baja (llanura y ciudad, 20 m, km 35 a 50). Cada una tiene su caudal, su sección, su temperatura y su reaireación (O'Connor y Dobbins).
 - **Vertimiento**: aguas domésticas tratadas o sin tratar, aguas mieles del café o escorrentía agrícola, en la zona alta, media, baja (antes de la bocatoma) o después de la ciudad. Se mezcla por balance de masa y luego la DBO y los coliformes decaen y el oxígeno sigue la ecuación de Streeter-Phelps, paso a paso cada 100 m, con afluentes limpios en cada cambio de zona. El panel muestra el perfil del río coloreado por el oxígeno, la tabla de las tres zonas y las gráficas de oxígeno, DBO y coliformes (escala logarítmica).
@@ -98,9 +102,25 @@ Dos interruptores de nivel controlan la bomba: se apaga al llegar al nivel de pa
 
 Valores de referencia de calidad (editables): coliformes fecales ≤ 2 000 NMP/100 mL y nitratos ≤ 10 mg/L de N para potabilizar con tratamiento convencional, oxígeno disuelto ≥ 4 mg/L para la vida acuática y coliformes fecales ≤ 1 000 NMP/100 mL para regar lo que se come crudo (Decreto 1594 de 1984, compilado en el Decreto 1076 de 2015). La Resolución 0565 de 2026 del Ministerio de Ambiente fija nuevos criterios que rigen desde mayo de 2027.
 
+## Represa y embalse (pestaña Represa)
+
+En el km 7 de la zona alta una presa (de 15 a 80 m) cierra el valle. Le entra el 25 % del caudal del río en la bocatoma.
+
+- **Embalse**: el valle tiene forma de V, así que el volumen crece con el cuadrado del nivel, V = a·h² (con 38 m guarda 9.5 millones de m³), y el área del espejo es su derivada, A = 2·a·h. El nivel cambia con el reloj de la simulación: dh/dt = (Q_entra − Q_sale)/A.
+- **Operación**: soltar lo que entra (filo de agua), soltar un caudal fijo o guardar agua soltando solo el caudal ambiental. Lleno, lo que sobra sale por el aliviadero; en el nivel mínimo (35 % de la presa) no puede soltar más de lo que entra. Lo que guarda o suelta cambia el caudal de las zonas alta, media y baja y la cota en la bocatoma.
+- **Central**: P = ρ·g·Q·H_n·η con H_n = h − y − k·Q²: la potencia es una función cúbica del caudal con un máximo. Unos 456 kW con el río normal.
+- **Línea y costos**: I = P/(√3·U·fp) y pérdidas P_p = 3·I²·r·L en 40 km (0.5 % a 34.5 kV; 3.5 % a 13.2 kV). Se compara el costo de producir la energía con el de llevarla, el kWh puesto en la ciudad con la tarifa de la red, y el agua de la ciudad bombeada con energía de la red, con energía de la represa o bajada por gravedad (con sus cámaras de quiebre de presión). Son costos de operación, sin la inversión.
+- **Un año mes a mes**: con el régimen de lluvias del Caribe, el caudal que entra, el que sale, el nivel, la energía y el río en la bocatoma con la represa y sin ella.
+
+## Huella hídrica y de carbono (pestaña Huella)
+
+- **Huella hídrica** (Hoekstra y otros, 2011): HH_verde = 10·ET_verde/Y, HH_azul = 10·ET_azul/Y y HH_gris = (α·N/(c_máx − c_nat))/Y, con la evapotranspiración del ciclo repartida día a día entre la lluvia efectiva (verde) y el riego (azul), los rendimientos nacionales de 2025 (UPRA, 2026) y la comparación con los promedios mundiales de Mekonnen y Hoekstra (2011). Para el banano de la zona baja da 802 m³/t (promedio mundial: 790).
+- **Carbono del transporte**: viajes de camión de ida y vuelta hasta la ciudad (55 km desde la montaña, 28 desde el piedemonte y 6 desde la llanura), litros de ACPM, CO₂ con 2.68 kg por litro (IPCC, 2006) y su costo con la tarifa del impuesto al carbono de 2026 (29 070.49 COP por tonelada de CO₂e).
+- **Inundación**: el lote de la llanura está en la vega del río (cota 3.20 m) y junto al canal del arroyo. La creciente del río y el desborde del arroyo lo cubren de agua y el cultivo pierde daño = mín(1, días/tolerancia)·mín(1, profundidad/0.30 m); cada cultivo aguanta encharcado un número de días distinto (1 día las hortalizas, 2 el banano, 10 el arroz, 14 la palma). En la montaña y el piedemonte los lotes están en la ladera, por encima de la creciente.
+
 ## Agua subterránea (pestaña Acuífero)
 
-Bajo la llanura hay suelo, una capa de arcilla si el acuífero es semiconfinado o confinado, el acuífero (grava, arena gruesa, arena media o arena fina y limosa, de 5 a 60 m de espesor) y la roca. Se eligen además la profundidad del agua, el caudal del pozo de una finca y su distancia al río.
+Se elige la zona: en la montaña, un aluvión delgado de grava en el fondo del valle; en el piedemonte, un abanico de arena gruesa y grava; en la llanura, arena bajo una capa de arcilla. Al cambiar de zona se proponen el material, el espesor, el suelo y el tipo típicos, y el río es el de esa zona (en la montaña el acuífero alimenta al río; en el piedemonte el río lo recarga). En cada zona hay suelo, una capa de arcilla si el acuífero es semiconfinado o confinado, el acuífero (grava, arena gruesa, arena media o arena fina y limosa, de 5 a 60 m de espesor) y la roca. Se eligen además la profundidad del agua, el caudal del pozo de una finca y su distancia al río.
 
 - **Río que gana o pierde agua**: si el río está más alto que el nivel freático le entrega agua al acuífero (río perdedor); si está más bajo, el acuífero lo alimenta (río ganador). El agua se mueve con la ley de Darcy, v = K·i/n_e.
 - **Pozo**: al bombear, el agua baja alrededor del pozo en un cono de abatimiento (Thiem, función logarítmica de la distancia) cuyo radio da la fórmula de Sichardt. Si el abatimiento pasa del 60 % del espesor, el pozo se seca.
@@ -109,11 +129,13 @@ Bajo la llanura hay suelo, una capa de arcilla si el acuífero es semiconfinado 
 
 ## La escena 3D: cuenca, cultivos y corte del terreno
 
-- **Cuatro vistas**, con botones sobre la escena: *Ciudad* (el acueducto, la red y el arroyo), *Cuenca* (el río del nacimiento al mar con las tres zonas, como en el perfil de la pestaña Río), *Cultivo* (el lote de la zona elegida, su bomba y su tubería) y *Acuífero* (el corte del frente de la escena). Al cambiar de pestaña, la cámara vuela sola a la vista que corresponde; si la persona mueve la cámara, el vuelo se detiene.
+- **Cinco vistas**, con botones sobre la escena: *Ciudad* (el acueducto, la red y el arroyo), *Cuenca* (el río del nacimiento al mar con las tres zonas, como en el perfil de la pestaña Río), *Represa* (la presa con su embalse, la central, el arranque de la línea y la tubería), *Cultivo* (el lote de la zona elegida, su bomba y su tubería) y *Acuífero* (el corte del terreno en la zona elegida). Al cambiar de pestaña, la cámara vuela sola a la vista que corresponde; si la persona mueve la cámara, el vuelo se detiene.
 - **La cuenca**: aguas arriba de la ciudad el río sube por el piedemonte hasta la montaña, entre laderas con bosque. Líneas blancas marcan dónde empiezan la zona media (km 15) y la baja (km 35). Las distancias horizontales están comprimidas.
 - **Color del río**: azul cuando está limpio, café con el sedimento de las lluvias y, desde el km del vertimiento, del color del agua residual según cuánta DBO y cuántos coliformes lleva en cada tramo; río abajo se aclara a medida que se degrada.
 - **Cultivos por zona**: en cada zona hay un lote con su cultivo típico (café en la montaña, cacao en el piedemonte y banano en la llanura). El de la zona elegida en la pestaña Riego muestra el cultivo del panel, el método de riego, la bomba en la orilla y la tubería que sube hasta el lote, a la altura del campo sobre el río de esa zona. En la montaña y el piedemonte las hileras van en curvas de nivel.
-- **Corte del terreno**: el frente de la escena está cortado como una maqueta y muestra las capas, el nivel freático (a trazos si es piezométrico), el pozo con su filtro, el agua adentro y la bomba sumergible, flechas y gotas que se mueven con el flujo subterráneo y, si el río va contaminado, la mancha de su agua dentro del acuífero hasta donde llega en 50 días.
+- **Represa y rutas**: la presa de concreto con su aliviadero (vierte cuando el embalse está lleno y entra más de lo que turbinan), la torre de toma, la tubería forzada y la casa de máquinas; el embalse sube y baja con el reloj. La línea eléctrica (torres y tres conductores) y la tubería por gravedad (con sus cámaras de quiebre) bajan por la ladera este hasta la ciudad. Los rótulos de las zonas muestran el caudal con la represa y sin ella.
+- **Inundación**: con la creciente el agua del río cubre la vega del cultivo de la llanura, y con el desborde del arroyo el agua baja a la calle y a la vega; el cultivo se marchita según lo que pierde.
+- **Corte del terreno**: en la llanura, el frente de la escena está cortado como una maqueta; en la montaña y el piedemonte, el corte va de través al valle junto al lote de esa zona y lo que queda aguas abajo se recorta mientras se mira. Muestra las capas, el nivel freático (a trazos si es piezométrico), el pozo con su filtro, el agua adentro y la bomba sumergible, flechas y gotas que se mueven con el flujo subterráneo y, si el río va contaminado, la mancha de su agua dentro del acuífero hasta donde llega en 50 días.
 
 ## Estaciones de bombeo (pestaña Bombas)
 
@@ -142,7 +164,7 @@ Con bombeo continuo la bomba trabaja 24 h y el tanque se mantiene lleno (altura 
 
 ## Pestaña Datos: guardar la simulación en Excel
 
-Mientras corre el reloj se guarda una fila cada 15 minutos de tiempo simulado (se puede cambiar a 5 min, 30 min o 1 h) y cada arranque o parada de la bomba con su instante exacto; la energía se suma tramo por tramo con el área bajo la recta del nivel. «Guardar escenario» copia todos los parámetros y resultados del momento (los escenarios quedan en el navegador aunque se recargue la página). «Descargar Excel (.xlsx)» crea `simulacion-hidrica_AAAA-MM-DD_HH-MM.xlsx` con ocho hojas:
+Mientras corre el reloj se guarda una fila cada 15 minutos de tiempo simulado (se puede cambiar a 5 min, 30 min o 1 h) y cada arranque o parada de la bomba con su instante exacto; la energía se suma tramo por tramo con el área bajo la recta del nivel. «Guardar escenario» copia todos los parámetros y resultados del momento (los escenarios quedan en el navegador aunque se recargue la página). «Descargar Excel (.xlsx)» crea `simulacion-hidrica_AAAA-MM-DD_HH-MM.xlsx` con doce hojas:
 
 | Hoja | Contenido |
 |---|---|
@@ -151,9 +173,13 @@ Mientras corre el reloj se guarda una fila cada 15 minutos de tiempo simulado (s
 | Serie de tiempo | Una fila por intervalo: nivel, bomba, consumo, altura, potencia, presiones, energía y costo acumulados, uso del canal |
 | Arranques y paradas | Cada cambio de la bomba con su hora, el nivel y la duración del tramo anterior |
 | Ciclo y costo | El ciclo de la bomba y el costo mensual con fórmulas de Excel (incluida la eficiencia del motor): si se cambia un dato de entrada (en azul), Excel recalcula |
-| Revisión del diseño | Los criterios de diseño del acueducto, el río, las bombas, el riego y el acuífero, con su resultado |
+| Revisión del diseño | Los criterios de diseño del acueducto, el río, las bombas, el riego, la represa, la huella y el acuífero, con su resultado |
 | Cantidades de obra | Tuberías, accesorios, excavación y cama de apoyo de la red |
 | Perfil del río | Oxígeno disuelto, saturación, déficit, DBO, coliformes y nitratos cada 0.5 km, con el vertimiento, la bocatoma y la toma de riego marcados |
+| Represa y energía | Embalse, potencia de la central, pérdidas de la línea y costos de operación de la energía y del agua, con fórmulas de Excel |
+| Embalse mes a mes | Un año de operación: caudal que entra y que sale, nivel, energía y río en la bocatoma con la represa y sin ella |
+| Huella hídrica | Huella verde, azul y gris del cultivo elegido y CO₂ de llevar la cosecha a la ciudad, con fórmulas de Excel |
+| Huella por cultivo | Los once cultivos en la zona elegida y el cultivo elegido en las tres zonas |
 
 Los números se guardan con todos sus decimales; el formato de cada celda solo decide cuántos se ven. Los textos largos (material de una tubería, ecuación de fricción, criterios de diseño) se parten en líneas dentro de su celda, y al imprimir las hojas anchas salen en horizontal, ajustadas al ancho de la página. El archivo se arma en el navegador con `js/excel.js` (sin librerías ni conexión a internet).
 
@@ -204,9 +230,8 @@ y abrir `http://localhost:8000`. Para correr las pruebas (requiere Node.js 18 o 
 npm test
 ```
 
-Son 70 pruebas: 21 del modelo base, 17 del diseño, 5 del archivo de Excel, 9 del río, 6 de las bombas, 6 del riego y 6 del acuífero.
-
+Son 87 pruebas: 21 del modelo base, 17 del diseño, 6 del archivo de Excel, 9 del río, 6 de las bombas, 6 del riego, 7 del acuífero, 8 de la represa y 7 de la huella.
 
 ## Valores de referencia
 
-La tarifa de energía (950 COP/kWh), el cargo fijo, la presión mínima de servicio (15 m.c.a.), la presión estática máxima (60 m.c.a.), los factores k1 y k2, la dotación, las pérdidas técnicas, los límites de velocidad y las dimensiones del catálogo de tuberías son valores editables de referencia. También lo son los del río y el riego: la sección del cauce, las constantes de la DBO y de los coliformes, las concentraciones típicas de cada vertimiento, los suelos y materiales del acuífero, los campos de aplicación de las bombas, las eficiencias de los motores, los K_c de los cultivos y el clima de cada zona. Antes de la sustentación conviene contrastarlos con la tarifa vigente del operador de energía, con el Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017), con las normas de calidad del agua vigentes y con los catálogos de los fabricantes.
+La tarifa de energía (950 COP/kWh), el cargo fijo, la presión mínima de servicio (15 m.c.a.), la presión estática máxima (60 m.c.a.), los factores k1 y k2, la dotación, las pérdidas técnicas, los límites de velocidad y las dimensiones del catálogo de tuberías son valores editables de referencia. También lo son los del río y el riego: la sección del cauce, las constantes de la DBO y de los coliformes, las concentraciones típicas de cada vertimiento, los suelos y materiales del acuífero, los campos de aplicación de las bombas, las eficiencias de los motores, los K_c de los cultivos y el clima de cada zona. Los de la represa y la huella también: los costos de operación de la central, la línea y la tubería, la forma del valle, los rendimientos, las dosis de nitrógeno y los días que aguanta cada cultivo encharcado. Antes de la sustentación conviene contrastarlos con la tarifa vigente del operador de energía, con el Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017), con las normas de calidad del agua vigentes y con los catálogos de los fabricantes.

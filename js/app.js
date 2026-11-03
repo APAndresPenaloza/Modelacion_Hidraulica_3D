@@ -9,17 +9,21 @@ import * as R from './rio.js';
 import * as B from './bombas.js';
 import * as G from './riego.js';
 import * as A from './acuifero.js';
+import * as P from './represa.js';
+import * as H from './huella.js';
 import { Escena } from './escena3d.js';
 import { crearGrafica, actualizarGrafica, serieLinea, seriePuntos, paleta } from './graficas.js';
 import { ExperimentoReynolds } from './reynolds.js';
-import { Registro, INTERVALOS, relojSimulado, crearLibro, nombreArchivo, descargarArchivo } from './datos.js';
+import { Registro, INTERVALOS, relojSimulado, crearLibro, nombreArchivo, descargarArchivo, libroRepresa, libroAno, libroHuella, libroCultivos } from './datos.js';
 
 // ── Estado ────────────────────────────────────────────────────────────────
 const NIVEL_INICIAL = 4.4;
 const HORA_INICIAL = 6 * 3600;
 const p = { ...M.PARAMETROS_INICIALES, ...S.PARAMETROS_DISENO };
-const sim = { nivel: NIVEL_INICIAL, t: HORA_INICIAL, bomba: true, arranques: 0, corriendo: true, factor: 600 };
+const sim = { nivel: NIVEL_INICIAL, t: HORA_INICIAL, bomba: true, arranques: 0, corriendo: true, factor: 600, nivelEmbalse: p.nivelEmbalse };
 let r = S.calcular(p, sim);
+/** Cota del río en la bocatoma con la represa (el control del panel es la del río natural). */
+const cotaEf = () => r.cotaRioEf ?? p.cotaRio;
 let tabActiva = 'captacion';
 // Registro de la simulación (serie de tiempo, arranques y paradas, escenarios) para el Excel
 const registro = new Registro();
@@ -45,6 +49,9 @@ function fmtTiempo(seg) {
 const limitar = (v, a, b) => Math.min(b, Math.max(a, v));
 
 /** Redondea hacia arriba a un valor "redondo" (1, 2 o 5 × 10ⁿ) para los ejes. */
+/** «1 día», «3 días». */
+const textoDias = (n) => `${fmt(n, 0)} ${Math.abs(n - 1) < 1e-9 ? 'día' : 'días'}`;
+
 function techoRedondo(v) {
   if (v <= 0) return 1;
   const e = 10 ** Math.floor(Math.log10(v));
@@ -55,7 +62,8 @@ const lps = M.lpsAm3s;
 
 // ── Definición de pestañas y controles ─────────────────────────────────────
 const TABS = [
-  { id: 'rio', nombre: 'Río', extra: true, revision: true, tablas: true, perfil: true, intro: 'El río baja de la Sierra Nevada por tres zonas: alta (montaña), media (piedemonte) y baja (llanura y ciudad). Las lluvias suben su nivel y le traen sedimento; un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos, que siguen río abajo y pueden pasar al agua subterránea (pestaña Acuífero). Aquí se fijan el nivel del río, el sedimento y el vertimiento. Con la vista Cuenca se recorre el río de la montaña al mar.' },
+  { id: 'rio', nombre: 'Río', extra: true, revision: true, tablas: true, perfil: true, intro: 'El río baja de la Sierra Nevada por tres zonas: alta (montaña), media (piedemonte) y baja (llanura y ciudad). Las lluvias suben su nivel y le traen sedimento; con una creciente se sale a la vega e inunda el cultivo de la llanura. Un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos, que siguen río abajo y pueden pasar al agua subterránea (pestaña Acuífero). Aquí se fijan el nivel del río natural, el sedimento y el vertimiento; la represa de la zona alta puede subir o bajar el caudal aguas abajo (pestaña Represa). Con la vista Cuenca se recorre el río de la montaña al mar.' },
+  { id: 'represa', nombre: 'Represa', extra: true, revision: true, tablas: true, figura: 'Corte de la presa y del embalse', intro: 'En la zona alta, en el km 7, una presa cierra el valle y forma un embalse: guarda el agua de las lluvias y la suelta cuando hace falta. Al pie de la presa una central convierte la caída del agua en energía eléctrica, y una línea la lleva 40 km hasta la ciudad; por una tubería también se puede bajar agua del embalse a la ciudad por gravedad. Lo que la presa guarda o suelta cambia el caudal del río en las zonas alta, media y baja. Aquí se comparan el costo de producir la energía con el de llevarla a la ciudad, y el de bombear el agua del río con el de traerla del embalse. Con la vista Represa se ven la presa, el embalse, la central, la línea y la tubería.' },
   { id: 'captacion', nombre: 'Captación', extra: true, intro: 'El agua del río entra por la rejilla de la bocatoma, deja la arena en el desarenador y pasa al pozo de succión, de donde la bomba la eleva hasta el tanque. Aquí se fija cuánto se bombea, el tamaño del desarenador y cuánto cuesta la energía.' },
   { id: 'bombas', nombre: 'Bombas', extra: true, revision: true, tablas: true, intro: 'Cada estación de bombeo se diseña con su caudal y su altura dinámica. De ahí salen la potencia hidráulica (la útil), la potencia al freno (en el eje), la potencia eléctrica real que se paga y el motor comercial que se instala, que es la capacidad. La tabla compara los tipos de bomba para ese punto de diseño; las curvas muestran dónde trabaja la bomba, y el NPSH, si cavita.' },
   { id: 'tuberias', nombre: 'Tuberías', experimento: true, intro: 'La aducción lleva el agua cruda del río al tanque, impulsada por la bomba; la conducción la baja del tanque hasta la entrada del barrio, donde empieza la red de distribución. Cada tubería se elige del catálogo por material, clase de presión y diámetro comercial: el diámetro interno fija la velocidad y el régimen del flujo, y el material, la rugosidad (o el coeficiente C de Hazen-Williams) y la presión que aguanta.' },
@@ -63,7 +71,8 @@ const TABS = [
   { id: 'red', nombre: 'Red', red: true, intro: 'La red de distribución reparte el agua en el barrio: una tubería principal, ramales que salen de ella con su válvula de compuerta, y en cada vivienda una acometida con abrazadera de toma, tubería de servicio, llave de paso y medidor. La conducción abastece todo el sector (QMD del tanque); aquí se diseña un barrio de ese sector. Diseña la red con los controles, mira las presiones en el plano y toca una vivienda para analizarla.' },
   { id: 'vivienda', nombre: 'Vivienda', intro: 'La presión en la casa es la altura del agua en el tanque menos lo que se pierde en la conducción, en la red y en la acometida (tubería de servicio, medidor y llave de paso). Con lo que queda sale el chorro del grifo.' },
   { id: 'riego', nombre: 'Riego', revision: true, tablas: true, intro: 'En la zona que se elija (alta, media o baja) el agua del río se bombea por una tubería hasta el cultivo; en la escena, el lote aparece en esa zona y a su altura sobre el río. Cuánta agua hace falta depende del clima de la zona, del cultivo y del método de riego; con eso se diseñan la tubería y la bomba de riego, y se compara con lo que consume la ciudad.' },
-  { id: 'acuifero', nombre: 'Acuífero', extra: true, revision: true, corte: true, intro: 'Bajo la llanura hay agua subterránea: llena los poros de una capa de arena o grava (el acuífero) y se mueve muy despacio. Según el nivel del río, el río le entrega agua al acuífero o el acuífero alimenta al río. Un pozo que bombea baja el nivel a su alrededor (cono de abatimiento) y, si el cono alcanza el río, atrae su agua: con ella pueden llegar los contaminantes. Aquí se eligen las capas del terreno y el pozo; en la escena, la vista Acuífero muestra el corte del terreno con el agua subterránea en movimiento.' },
+  { id: 'huella', nombre: 'Huella', extra: true, revision: true, tablas: true, intro: 'La huella hídrica es el agua que se usa para producir una tonelada de cosecha. La verde es la lluvia que el cultivo evapotranspira; la azul, el agua de riego que consume; y la gris, el agua que haría falta para diluir el nitrógeno que se lava. Aquí se compara entre cultivos y entre zonas, se calcula el CO₂ de llevar la cosecha a la ciudad en camión y lo que costaría con el impuesto al carbono, y cuánto se pierde cuando la creciente del río o el desborde del arroyo inundan el lote: depende de cuántos días aguanta encharcado cada cultivo.' },
+  { id: 'acuifero', nombre: 'Acuífero', extra: true, revision: true, corte: true, intro: 'Bajo el valle hay agua subterránea: llena los poros de una capa de arena o grava (el acuífero) y se mueve muy despacio. En la montaña es un aluvión delgado de grava en el fondo del valle; en el piedemonte, un abanico de arena gruesa y grava; en la llanura, una capa de arena bajo arcilla. Según el nivel del río, el río le entrega agua al acuífero o el acuífero alimenta al río. Un pozo que bombea baja el nivel a su alrededor (cono de abatimiento) y, si el cono alcanza el río, atrae su agua: con ella pueden llegar los contaminantes. Aquí se eligen la zona, las capas del terreno y el pozo; en la escena, la vista Acuífero muestra el corte del terreno de esa zona con el agua subterránea en movimiento.' },
   { id: 'arroyo', nombre: 'Arroyo', intro: 'Con los aguaceros los arroyos de la ciudad crecen de golpe. El canal trapezoidal, excavado por debajo de la calle, tiene que conducir la crecida sin desbordarse.' },
   { id: 'datos', nombre: 'Datos', datos: true, intro: 'Guarda la información de la simulación en un libro de Excel: los parámetros y resultados, la serie de tiempo que se registra mientras corre el reloj, los arranques y paradas de la bomba, la revisión del diseño, las cantidades de obra y los escenarios que guardes para compararlos.' },
 ];
@@ -103,17 +112,30 @@ const OPC_TIPOS_BOMBA = B.ORDEN_TIPOS.map((valor) => ({ valor, nombre: B.TIPOS_B
 const esBombaA = () => p.bombaAnalisis !== 'riego';
 const esBombaR = () => p.bombaAnalisis === 'riego';
 const sinVertimiento = () => p.vertTipo === 'ninguno';
+const OPC_ZONAS = Object.entries(R.ZONAS).map(([valor, z]) => ({ valor, nombre: `${z.nombre}: ${z.lugar}, ${R.miles(z.elevacion)} m.s.n.m.` }));
+const opcionesCultivo = () => Object.entries(G.CULTIVOS).map(([valor, c]) => ({ valor, nombre: `${c.nombre}${G.cultivoApto(valor, p.zonaRiego) ? '' : ' (no se da en esta zona)'}` }));
+const DESCRIPCION_ACUIFERO = {
+  alta: 'aluvión de grava en el fondo del valle',
+  media: 'abanico de arena gruesa y grava',
+  baja: 'arena bajo una capa de arcilla en la llanura',
+};
+function textoCotaRio(v) {
+  const capta = R.captaAgua(cotaEf())
+    ? `Lámina sobre la rejilla de la bocatoma: ${fmt(cotaEf() - R.REJILLA.fondo)} m (capta desde la cota ${fmt(R.COTA_MIN_CAPTACION)} m)`
+    : `Por debajo de la cota ${fmt(R.COTA_MIN_CAPTACION)} m la bocatoma no capta y la bomba se detiene`;
+  const represa = Math.abs(cotaEf() - v) > 0.005 ? `Con la represa el río queda a la cota ${fmt(cotaEf())} m. ` : '';
+  const vega = cotaEf() > H.COTA_VEGA ? ` El río se sale a la vega: ${fmt(cotaEf() - H.COTA_VEGA)} m de agua sobre el lote de la zona baja.` : '';
+  return `${represa}${capta}.${vega}`;
+}
 
 const CONTROLES = [
   { tab: 'rio', grupo: 'Nivel del río y lluvias' },
   { tab: 'rio', id: 'lluvia', clave: 'lluvia', etiqueta: 'Escenario de lluvia', tipo: 'opciones', opciones: OPC_LLUVIA,
     alCambiar: (v) => { const l = R.LLUVIAS[v]; if (l) { p.cotaRio = l.cota; p.sedimento = l.sedimento; } } },
   {
-    tab: 'rio', id: 'cotaRio', clave: 'cotaRio', etiqueta: 'Cota de la lámina del río', unidad: 'm.s.n.m.', min: 1.2, max: 3.3, paso: 0.01, dec: 2,
+    tab: 'rio', id: 'cotaRio', clave: 'cotaRio', etiqueta: 'Cota de la lámina del río (sin la represa)', unidad: 'm.s.n.m.', min: 1.2, max: 3.8, paso: 0.01, dec: 2,
     escribir: (v) => { p.cotaRio = v; p.lluvia = 'personalizada'; },
-    extra: (v) => (R.captaAgua(v)
-      ? `Lámina sobre la rejilla de la bocatoma: ${fmt(v - R.REJILLA.fondo)} m (capta desde la cota ${fmt(R.COTA_MIN_CAPTACION)} m)`
-      : `Por debajo de la cota ${fmt(R.COTA_MIN_CAPTACION)} m la bocatoma no capta y la bomba se detiene`),
+    extra: textoCotaRio,
   },
   { tab: 'rio', id: 'sedimento', clave: 'sedimento', etiqueta: 'Sedimento en suspensión', unidad: 'mg/L', min: 10, max: 5000, paso: 10, dec: 0,
     escribir: (v) => { p.sedimento = v; p.lluvia = 'personalizada'; } },
@@ -130,6 +152,33 @@ const CONTROLES = [
   { tab: 'rio', grupo: 'Criterios de calidad (referencia)' },
   { tab: 'rio', id: 'odMin', clave: 'odMin', etiqueta: 'Oxígeno disuelto mínimo (vida acuática)', unidad: 'mg/L', min: 2, max: 8, paso: 0.1, dec: 1 },
   { tab: 'rio', id: 'cfMax', clave: 'cfMax', etiqueta: 'Coliformes fecales máximos para potabilizar', unidad: 'NMP/100 mL', min: 100, max: 20000, paso: 100, dec: 0 },
+
+  { tab: 'represa', grupo: 'Presa y embalse' },
+  { tab: 'represa', id: 'alturaPresa', clave: 'alturaPresa', etiqueta: 'Altura de la presa', unidad: 'm', min: 15, max: 80, paso: 1, dec: 0,
+    extra: (v) => `Guarda hasta ${fmt(P.volumen(P.nivelMaximo(v)) / 1e6, 2)} millones de m³ con el agua a ${fmt(P.nivelMaximo(v), 0)} m (deja ${P.PRESA.bordeLibre} m de borde libre)` },
+  {
+    tab: 'represa', id: 'nivelEmbalse', etiqueta: 'Nivel del agua en el embalse ahora', unidad: 'm', min: 0, max: () => P.nivelMaximo(p.alturaPresa), paso: 0.1, dec: 2,
+    leer: () => sim.nivelEmbalse,
+    escribir: (v) => { sim.nivelEmbalse = limitar(v, 0, P.nivelMaximo(p.alturaPresa)); },
+    extra: () => `Nivel mínimo de operación: ${fmt(P.nivelMinimo(p.alturaPresa), 1)} m (${fmt(P.PRESA.fraccionMinima * 100, 0)} % de la presa); por debajo las turbinas se detienen`,
+  },
+  { tab: 'represa', grupo: 'Operación' },
+  { tab: 'represa', id: 'operacionPresa', clave: 'operacionPresa', etiqueta: 'Qué hace la presa', tipo: 'opciones',
+    opciones: Object.entries(P.OPERACIONES).map(([valor, nombre]) => ({ valor, nombre })) },
+  { tab: 'represa', id: 'Qpresa', clave: 'Qpresa', etiqueta: 'Caudal fijo que suelta', unidad: 'm³/s', min: 0.1, max: 8, paso: 0.05, dec: 2,
+    visible: () => p.operacionPresa === 'fijo', extra: (v) => `Le entran en promedio ${fmt(P.caudalMedioEntrada(), 3)} m³/s: ${v > P.caudalMedioEntrada() ? 'soltando más, el embalse se vacía' : 'soltando menos, el embalse se llena'}` },
+  { tab: 'represa', id: 'caudalAmbiental', clave: 'caudalAmbiental', etiqueta: 'Caudal ambiental: lo mínimo que siempre suelta', unidad: '%', min: 10, max: 60, paso: 1, dec: 0,
+    extra: (v) => `${fmt((v / 100) * P.caudalMedioEntrada(), 3)} m³/s: el ${fmt(v, 0)} % del caudal medio que entra al embalse` },
+  { tab: 'represa', grupo: 'Central hidroeléctrica' },
+  { tab: 'represa', id: 'QturbMax', clave: 'QturbMax', etiqueta: 'Caudal máximo de las turbinas (capacidad)', unidad: 'm³/s', min: 0.5, max: 6, paso: 0.1, dec: 2 },
+  { tab: 'represa', id: 'etaTurbina', clave: 'etaTurbina', etiqueta: 'Eficiencia de la turbina y el generador', unidad: '%', min: 60, max: 95, paso: 1, dec: 0, aUI: (v) => v * 100, deUI: (v) => v / 100 },
+  { tab: 'represa', grupo: 'Llevar la energía y el agua a la ciudad' },
+  { tab: 'represa', id: 'tensionLinea', clave: 'tensionLinea', etiqueta: 'Tensión de la línea eléctrica (40 km)', tipo: 'opciones', numero: true,
+    opciones: P.TENSIONES.map((v) => ({ valor: v, nombre: `${fmt(v, 1)} kV` })) },
+  { tab: 'represa', id: 'costoGeneracion', clave: 'costoGeneracion', etiqueta: 'Costo de producir la energía (operación)', unidad: 'COP/kWh', min: 10, max: 300, paso: 5, dec: 0 },
+  { tab: 'represa', id: 'costoLinea', clave: 'costoLinea', etiqueta: 'Costo de operar la línea', unidad: 'COP/kWh', min: 0, max: 100, paso: 1, dec: 0 },
+  { tab: 'represa', id: 'costoGravedad', clave: 'costoGravedad', etiqueta: 'Costo de operar la tubería por gravedad', unidad: 'COP/m³', min: 5, max: 300, paso: 5, dec: 0 },
+  { tab: 'represa', id: 'tarifa2', clave: 'tarifaKWh', etiqueta: 'Tarifa de la energía de la red', unidad: 'COP/kWh', min: 300, max: 1500, paso: 10, dec: 0 },
 
   { tab: 'captacion', grupo: 'Bombeo desde el río' },
   { tab: 'captacion', id: 'Qbombeo', clave: 'Qbombeo', etiqueta: 'Caudal bombeado', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
@@ -156,7 +205,7 @@ const CONTROLES = [
   {
     tab: 'bombas', id: 'cotaEjeA', clave: 'cotaEjeA', etiqueta: 'Cota del eje de la bomba', unidad: 'm.s.n.m.', min: 2, max: 10, paso: 0.1, dec: 2,
     visible: () => esBombaA() && !B.TIPOS_BOMBA[p.tipoBombaA]?.sumergida,
-    extra: (v) => `Altura de succión: ${fmt(v - (p.cotaRio - S.DESCENSO_POZO))} m sobre el agua del pozo de succión`,
+    extra: (v) => `Altura de succión: ${fmt(v - (cotaEf() - S.DESCENSO_POZO))} m sobre el agua del pozo de succión`,
   },
   { tab: 'bombas', id: 'eficiencia2', clave: 'eficiencia', etiqueta: 'Eficiencia de la bomba', unidad: '%', min: 40, max: 90, paso: 1, dec: 0, aUI: (v) => v * 100, deUI: (v) => v / 100, visible: esBombaA },
   { tab: 'bombas', id: 'Qbombeo4', clave: 'Qbombeo', etiqueta: 'Caudal bombeado', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2, visible: esBombaA },
@@ -271,10 +320,8 @@ const CONTROLES = [
   { tab: 'vivienda', id: 'Qdemanda3', clave: 'Qdemanda', etiqueta: 'Caudal máximo diario del sector (QMD)', unidad: 'L/s', min: 0.1, max: 30, paso: 0.05, dec: 2 },
 
   { tab: 'riego', grupo: 'Zona y cultivo' },
-  { tab: 'riego', id: 'zonaRiego', clave: 'zonaRiego', etiqueta: 'Zona del río', tipo: 'opciones',
-    opciones: Object.entries(R.ZONAS).map(([valor, z]) => ({ valor, nombre: `${z.nombre}: ${z.lugar}, ${R.miles(z.elevacion)} m.s.n.m.` })) },
-  { tab: 'riego', id: 'cultivo', clave: 'cultivo', etiqueta: 'Cultivo', tipo: 'opciones',
-    opciones: () => Object.entries(G.CULTIVOS).map(([valor, c]) => ({ valor, nombre: `${c.nombre}${G.cultivoApto(valor, p.zonaRiego) ? '' : ' (no se da en esta zona)'}` })) },
+  { tab: 'riego', id: 'zonaRiego', clave: 'zonaRiego', etiqueta: 'Zona del río', tipo: 'opciones', opciones: OPC_ZONAS },
+  { tab: 'riego', id: 'cultivo', clave: 'cultivo', etiqueta: 'Cultivo', tipo: 'opciones', opciones: opcionesCultivo },
   { tab: 'riego', id: 'areaRiego', clave: 'areaRiego', etiqueta: 'Área cultivada', unidad: 'ha', min: 0.5, max: 200, paso: 0.5, dec: 1 },
   { tab: 'riego', grupo: 'Sistema de riego' },
   { tab: 'riego', id: 'metodoRiego', clave: 'metodoRiego', etiqueta: 'Método de riego', tipo: 'opciones',
@@ -287,6 +334,35 @@ const CONTROLES = [
   { tab: 'riego', id: 'Lriego', clave: 'Lriego', etiqueta: 'Longitud de la tubería', unidad: 'm', min: 50, max: 3000, paso: 10, dec: 0 },
   { tab: 'riego', id: 'eficienciaR2', clave: 'eficienciaR', etiqueta: 'Eficiencia de la bomba de riego', unidad: '%', min: 40, max: 90, paso: 1, dec: 0, aUI: (v) => v * 100, deUI: (v) => v / 100 },
 
+  { tab: 'huella', grupo: 'Cultivo (el mismo de la pestaña Riego)' },
+  { tab: 'huella', id: 'zonaRiego2', clave: 'zonaRiego', etiqueta: 'Zona del río', tipo: 'opciones', opciones: OPC_ZONAS },
+  { tab: 'huella', id: 'cultivo2', clave: 'cultivo', etiqueta: 'Cultivo', tipo: 'opciones', opciones: opcionesCultivo },
+  { tab: 'huella', id: 'areaRiego2', clave: 'areaRiego', etiqueta: 'Área cultivada', unidad: 'ha', min: 0.5, max: 200, paso: 0.5, dec: 1 },
+  { tab: 'huella', id: 'dosisN', clave: 'dosisN', etiqueta: 'Nitrógeno aplicado', unidad: '%', min: 0, max: 200, paso: 5, dec: 0,
+    extra: (v) => `${fmt(((H.DATOS_CULTIVO[p.cultivo]?.N ?? 0) * v) / 100, 0)} kg/ha por cosecha (${fmt(v, 0)} % de la dosis típica para este cultivo)` },
+  { tab: 'huella', grupo: 'Llevar la cosecha a la ciudad' },
+  { tab: 'huella', id: 'capacidadCamion', clave: 'capacidadCamion', etiqueta: 'Capacidad del camión', unidad: 't', min: 2, max: 35, paso: 1, dec: 0 },
+  { tab: 'huella', id: 'impuestoCarbono', clave: 'impuestoCarbono', etiqueta: 'Tarifa del impuesto al carbono', unidad: 'COP/t', min: 0, max: 200000, paso: 500, dec: 0,
+    extra: () => 'Por tonelada de CO₂: la tarifa de 2026 es 29 070.49 COP (DIAN, Resolución 000003 de 2026)' },
+  { tab: 'huella', grupo: 'Inundación del lote' },
+  { tab: 'huella', id: 'lluvia2', clave: 'lluvia', etiqueta: 'Escenario de lluvia (el de la pestaña Río)', tipo: 'opciones', opciones: OPC_LLUVIA,
+    alCambiar: (v) => { const l = R.LLUVIAS[v]; if (l) { p.cotaRio = l.cota; p.sedimento = l.sedimento; } } },
+  {
+    tab: 'huella', id: 'cotaRio2', clave: 'cotaRio', etiqueta: 'Cota del río sin la represa', unidad: 'm.s.n.m.', min: 1.2, max: 3.8, paso: 0.01, dec: 2,
+    escribir: (v) => { p.cotaRio = v; p.lluvia = 'personalizada'; },
+    extra: () => `La vega del lote de la zona baja está a la cota ${fmt(H.COTA_VEGA)} m; con la represa el río queda a la cota ${fmt(cotaEf())} m`,
+  },
+  { tab: 'huella', id: 'diasInundacion', clave: 'diasInundacion', etiqueta: 'Días que dura la creciente sobre el lote', unidad: 'días', min: 0.5, max: 20, paso: 0.5, dec: 1 },
+  { tab: 'huella', id: 'Qcrecida2', clave: 'Qcrecida', etiqueta: 'Caudal de la crecida del arroyo', unidad: 'm³/s', min: 0.5, max: 40, paso: 0.1, dec: 2,
+    extra: () => `El canal lleva hasta ${fmt(r.canal.Qcap)} m³/s; lo que sobra se sale y cubre el lote unas ${fmt(H.DIAS_ARROYO * 24, 0)} horas` },
+
+  { tab: 'acuifero', grupo: 'Zona del río' },
+  { tab: 'acuifero', id: 'zonaAcuifero', clave: 'zonaAcuifero', etiqueta: 'Dónde se mira el agua subterránea', tipo: 'opciones',
+    opciones: Object.entries(R.ZONAS).map(([valor, z]) => ({ valor, nombre: `${z.nombre}: ${DESCRIPCION_ACUIFERO[valor]}` })),
+    alCambiar: (v) => {
+      const z = A.ZONAS_ACUIFERO[v];
+      if (z) Object.assign(p, { materialAcuifero: z.material, espesorAcuifero: z.espesor, sueloAcuifero: z.suelo, tipoAcuifero: z.tipo });
+    } },
   { tab: 'acuifero', grupo: 'Capas del terreno' },
   { tab: 'acuifero', id: 'sueloAcuifero', clave: 'sueloAcuifero', etiqueta: 'Suelo sobre el agua subterránea', tipo: 'opciones',
     opciones: Object.entries(R.SUELOS).map(([valor, x]) => ({ valor, nombre: `${x.nombre} (K = ${x.K} m/día)` })) },
@@ -295,9 +371,10 @@ const CONTROLES = [
   {
     tab: 'acuifero', id: 'profFreatico', clave: 'profFreatico', etiqueta: 'Profundidad del agua subterránea', unidad: 'm', min: 0.5, max: 30, paso: 0.1, dec: 1,
     extra: (d) => {
-      const nivel = A.COTA_LLANURA - d;
-      const dif = p.cotaRio - nivel;
-      return `Nivel a la cota ${fmt(nivel)} m: ${Math.abs(dif) < 0.05 ? 'igual que el río' : `${fmt(Math.abs(dif))} m ${dif > 0 ? 'por debajo' : 'por encima'} del río (cota ${fmt(p.cotaRio)} m)`}`;
+      const a = r.acuifero;
+      const nivel = a.terreno - d;
+      const dif = a.hRio - nivel;
+      return `Nivel a la cota ${fmt(nivel)} m: ${Math.abs(dif) < 0.05 ? 'igual que el río' : `${fmt(Math.abs(dif))} m ${dif > 0 ? 'por debajo' : 'por encima'} del río (cota ${fmt(a.hRio)} m)`}${a.zona === 'baja' ? '' : '; cotas medidas desde un lecho a la cota 1.00 m'}`;
     },
   },
   { tab: 'acuifero', id: 'materialAcuifero', clave: 'materialAcuifero', etiqueta: 'Material del acuífero', tipo: 'opciones',
@@ -369,6 +446,7 @@ function crearPanel() {
       <p class="intro">${t.intro}</p>
       ${t.red ? `<figure class="plano"><div class="svg-plano" role="img" aria-label="Plano de la red de distribución"></div><figcaption>Plano esquemático (sin escala). El color de cada vivienda es su presión en la hora pico con el tanque en el nivel de arranque: verde cumple, ocre está cerca del mínimo y rojo no cumple. Toca una vivienda para analizarla.</figcaption></figure>` : ''}
       ${t.corte ? `<figure class="plano corte-acuifero"><div class="svg-plano svg-corte" role="img" aria-label="Corte del terreno entre el río y el pozo"></div><figcaption>Corte esquemático del terreno desde el río hasta más allá del pozo (alturas exageradas). Las flechas muestran hacia dónde se mueve el agua subterránea.</figcaption></figure>` : ''}
+      ${t.figura ? `<figure class="plano figura-tab"><div class="svg-plano svg-figura" role="img" aria-label="${t.figura}"></div><figcaption></figcaption></figure>` : ''}
       ${t.perfil ? `<figure class="plano perfil-rio"><div class="svg-plano svg-perfil" role="img" aria-label="Perfil del río por zonas con la calidad del agua"></div><figcaption>Perfil del cauce desde el nacimiento hasta el mar (sin escala horizontal; alturas exageradas). El color del río es el oxígeno disuelto y la franja de abajo, los coliformes fecales.</figcaption></figure>` : ''}
       <div class="controles"></div>
       <h3>Resultados</h3>
@@ -394,7 +472,8 @@ function crearPanel() {
     const exp = f.querySelector('.experimento');
     fichas[t.id] = {
       raiz: f,
-      plano: f.querySelector('.svg-plano:not(.svg-perfil):not(.svg-corte)'),
+      plano: f.querySelector('.svg-plano:not(.svg-perfil):not(.svg-corte):not(.svg-figura)'),
+      figura: f.querySelector('.svg-figura'),
       corte: f.querySelector('.svg-corte'),
       perfil: f.querySelector('.svg-perfil'),
       tablas: f.querySelector('.tablas'),
@@ -594,6 +673,7 @@ function aplicarRestricciones() {
   p.nViviendas = Math.round(p.nViviendas);
   S.sincronizarTubos(p);
   sim.nivel = limitar(sim.nivel, 0, p.hMax);
+  sim.nivelEmbalse = limitar(sim.nivelEmbalse, 0, P.nivelMaximo(p.alturaPresa));
 }
 
 function recalcular() {
@@ -610,7 +690,14 @@ function cambio(origen) {
   recalcular();
   sincronizarControles(origen);
   pintarPanel();
-  escena?.actualizar(p, r, sim.nivel);
+  actualizarEscena();
+}
+
+/** La escena dibuja el río con la represa: recibe la cota efectiva en la bocatoma. */
+function actualizarEscena() {
+  if (!escena) return;
+  const ef = cotaEf();
+  escena.actualizar(Math.abs(ef - p.cotaRio) > 1e-9 ? { ...p, cotaRio: ef } : p, r, sim.nivel);
 }
 
 const ecu = {
@@ -909,7 +996,8 @@ function tablaZonasRio() {
     ['Tramo', ...ids.map((id) => `km ${R.ZONAS[id].km[0]} a ${R.ZONAS[id].km[1]}`)],
     ['Altitud', ...ids.map((id) => `${R.miles(R.ZONAS[id].elevacion)} m`)],
     ['Temperatura del agua', ...ids.map((id) => `${R.ZONAS[id].Tagua} °C`)],
-    ['Caudal', ...ids.map((id) => `${fmt(cal.hid[id].Q)} m³/s`)],
+    ...(Math.abs(r.represa.dQ) > 1e-9 ? [['Caudal sin la represa', ...ids.map((id) => `${fmt(r.represa.zonas[id].natural)} m³/s`)]] : []),
+    [Math.abs(r.represa.dQ) > 1e-9 ? 'Caudal con la represa' : 'Caudal', ...ids.map((id) => `${fmt(cal.hid[id].Q)} m³/s`)],
     ['Profundidad', ...ids.map((id) => `${fmt(cal.hid[id].y)} m`)],
     ['Velocidad', ...ids.map((id) => `${fmt(cal.hid[id].u)} m/s`)],
     ['Reaireación k<sub>a</sub>', ...ids.map((id) => `${fmt(cal.hid[id].ka, 1)} 1/día`)],
@@ -936,9 +1024,10 @@ function terrenoCorte(x) {
   const c = RIO_CORTE;
   const d = Math.abs(x - c.centro);
   const lecho = R.CAUCE.fondo;
+  const terreno = r.acuifero.terreno;
   if (d <= c.semiancho) return lecho;
-  if (d <= c.semiancho + c.talud) return lecho + ((A.COTA_LLANURA - lecho) * (d - c.semiancho)) / c.talud;
-  return A.COTA_LLANURA;
+  if (d <= c.semiancho + c.talud) return lecho + ((terreno - lecho) * (d - c.semiancho)) / c.talud;
+  return terreno;
 }
 
 /** Nivel del agua subterránea [m] en el corte: el del río bajo el cauce, con el pozo al este. */
@@ -962,7 +1051,7 @@ function corteAcuifero() {
   const xMax = Math.max(100, Math.min(600, Math.ceil((Math.max(2.3 * a.L, a.L + 30)) / 10) * 10));
   // Escala vertical en dos tramos: la parte de arriba (río, suelo, arcilla y cono del
   // pozo) se ve más grande que la profundidad del acuífero
-  const cTop = A.COTA_LLANURA + 2.5;
+  const cTop = a.terreno + 2.5;
   const cBot = est.fondo - 3;
   const cMed = Math.max(cBot + 2, Math.min(est.techoAcuifero, Math.max(est.fondo, a.nivelPozo), R.CAUCE.fondo) - 2.5);
   const hArriba = 0.62 * (yB - yT);
@@ -1003,8 +1092,8 @@ function corteAcuifero() {
   const xr0 = X(cc.centro - cc.semiancho - cc.talud);
   const xr1 = X(cc.centro + cc.semiancho + cc.talud);
   const lechoY = Y(R.CAUCE.fondo);
-  const rioY = Y(p.cotaRio);
-  const xsRio = xs.filter((x) => x > cc.centro - cc.semiancho - cc.talud && x < cc.centro + cc.semiancho + cc.talud && terrenoCorte(x) < p.cotaRio);
+  const rioY = Y(a.hRio);
+  const xsRio = xs.filter((x) => x > cc.centro - cc.semiancho - cc.talud && x < cc.centro + cc.semiancho + cc.talud && terrenoCorte(x) < a.hRio);
   if (xsRio.length) {
     svg += `<path d="M${X(xsRio[0])},${rioY} ${xsRio.map((x) => `L${X(x).toFixed(1)},${Y(terrenoCorte(x)).toFixed(1)}`).join(' ')} L${X(xsRio[xsRio.length - 1])},${rioY} Z" style="fill:var(--agua)" opacity="0.75"/>`;
   }
@@ -1030,24 +1119,48 @@ function corteAcuifero() {
   const xp = X(a.L);
   const fondoPozo = Y(est.fondo + 0.8);
   const aguaPozo = Y(Math.max(est.fondo + 1, a.nivelPozo));
-  svg += `<rect x="${xp - 3.5}" y="${Y(A.COTA_LLANURA) - 7}" width="7" height="${fondoPozo - Y(A.COTA_LLANURA) + 7}" style="fill:var(--panel);stroke:var(--tinta)" stroke-width="1"/>`;
+  svg += `<rect x="${xp - 3.5}" y="${Y(a.terreno) - 7}" width="7" height="${fondoPozo - Y(a.terreno) + 7}" style="fill:var(--panel);stroke:var(--tinta)" stroke-width="1"/>`;
   svg += `<rect x="${xp - 2.5}" y="${aguaPozo}" width="5" height="${Math.max(0, fondoPozo - aguaPozo)}" style="fill:var(--agua)"/>`;
   if (conPozo) svg += `<rect x="${xp - 2.5}" y="${fondoPozo - 9}" width="5" height="7" style="fill:var(--tinta)"/>`;
-  svg += `<rect x="${xp - 7}" y="${Y(A.COTA_LLANURA) - 13}" width="14" height="6" rx="1" style="fill:var(--tinta-2)"/>`;
+  svg += `<rect x="${xp - 7}" y="${Y(a.terreno) - 13}" width="14" height="6" rx="1" style="fill:var(--tinta-2)"/>`;
   // Cotas y rótulos
   const yL = yT - 14;
   svg += `<line x1="${X(0)}" y1="${yL}" x2="${xp}" y2="${yL}" style="stroke:var(--tinta-2)" stroke-width="0.8"/>`;
   svg += `<line x1="${X(0)}" y1="${yL - 3}" x2="${X(0)}" y2="${yL + 3}" style="stroke:var(--tinta-2)" stroke-width="0.8"/><line x1="${xp}" y1="${yL - 3}" x2="${xp}" y2="${yL + 3}" style="stroke:var(--tinta-2)" stroke-width="0.8"/>`;
   svg += `<text x="${(X(0) + xp) / 2}" y="${yL - 4}" text-anchor="middle" class="t-chica">L = ${fmt(a.L, 0)} m</text>`;
   svg += `<text x="${X(cc.centro)}" y="${rioY - 5}" text-anchor="middle" class="t-chica t-sel t-halo">Río</text>`;
-  svg += `<text x="${xp}" y="${Y(A.COTA_LLANURA) - 16}" text-anchor="middle" class="t-chica t-sel t-halo">Pozo · ${fmt(p.Qpozo, 1)} L/s</text>`;
+  svg += `<text x="${xp}" y="${Y(a.terreno) - 16}" text-anchor="middle" class="t-chica t-sel t-halo">Pozo · ${fmt(p.Qpozo, 1)} L/s</text>`;
   const xTxt = X(xMax) - 4;
-  svg += `<text x="${xTxt}" y="${Math.max(Y(A.COTA_LLANURA) + 10, Y((A.COTA_LLANURA + est.nivel) / 2) + 3)}" text-anchor="end" class="t-chica t-halo">${libre ? 'Zona no saturada' : 'Suelo'}: ${suelo.nombre.toLowerCase()}</text>`;
-  if (!libre) svg += `<text x="${xTxt}" y="${Y((est.nivel + est.techoAcuifero) / 2) + 3}" text-anchor="end" class="t-chica t-halo">Arcilla, ${fmt(est.e, 0)} m</text>`;
-  svg += `<text x="${xTxt}" y="${Y(cMedia) + 3}" text-anchor="end" class="t-chica t-halo">Acuífero: ${a.mat.nombre.toLowerCase()}, ${fmt(est.b, 0)} m</text>`;
-  svg += `<text x="${xTxt}" y="${Math.min(yB - 4, Y(est.fondo) + 12)}" text-anchor="end" class="t-chica t-halo">Roca</text>`;
-  const xNivel = a.L + (xMax - a.L) * 0.5;
-  svg += `<text x="${X(xNivel)}" y="${Y(nivel(xNivel)) - 5}" text-anchor="middle" class="t-chica t-halo">${libre ? 'Nivel freático' : 'Nivel piezométrico'}</text>`;
+  // Rótulos de las capas, alineados a la derecha; se guardan sus cajas para no encimar el del nivel
+  const anchoTxt = (t) => 4.9 * t.length;
+  const cajas = [];
+  const rotulo = (texto, y) => {
+    svg += `<text x="${xTxt}" y="${y}" text-anchor="end" class="t-chica t-halo">${texto}</text>`;
+    cajas.push({ x0: xTxt - anchoTxt(texto), x1: xTxt, y });
+  };
+  const ySuelo = Math.max(Y(a.terreno) + 10, Y((a.terreno + est.nivel) / 2) + 3);
+  rotulo(`${libre ? 'Zona no saturada' : 'Suelo'}: ${suelo.nombre.toLowerCase()}`, ySuelo);
+  if (!libre) rotulo(`Arcilla, ${fmt(est.e, 0)} m`, Y((est.nivel + est.techoAcuifero) / 2) + 3);
+  rotulo(`Acuífero: ${a.mat.nombre.toLowerCase()}, ${fmt(est.b, 0)} m`, Y(cMedia) + 3);
+  rotulo('Roca', Math.min(yB - 4, Y(est.fondo) + 12));
+  // El rótulo del nivel va donde no choque: sobre la línea o bajo ella, a la derecha del
+  // pozo, o entre el río y el pozo si allí cabe
+  const textoNivel = libre ? 'Nivel freático' : 'Nivel piezométrico';
+  const wN = anchoTxt(textoNivel);
+  const choca = (cx, y) => cajas.reduce((n, c) => n + (Math.abs(c.y - y) < 11 && cx + wN / 2 > c.x0 - 2 && cx - wN / 2 < c.x1 + 2 ? 1 : 0), 0);
+  const xNivel = a.L + (xMax - a.L) * 0.62;
+  const candidatos = [
+    [X(xNivel), Y(nivel(xNivel)) - 5],
+    [X(xNivel), Y(nivel(xNivel)) + 11],
+  ];
+  const xOrilla = X(cc.centro + cc.semiancho + cc.talud);
+  if (xp - xOrilla > wN + 16) {
+    const xm = (xOrilla + xp) / 2;
+    const cm = xMin + ((xm - x0) / (x1 - x0)) * (xMax - xMin);
+    candidatos.push([xm, Y(nivel(cm)) - 5]);
+  }
+  const [xN, yN] = candidatos.reduce((m, c) => (choca(...c) < choca(...m) ? c : m));
+  svg += `<text x="${xN}" y="${yN}" text-anchor="middle" class="t-chica t-halo">${textoNivel}</text>`;
   if (conPozo) svg += `<text x="${xp + 6}" y="${aguaPozo + 3}" class="t-chica t-halo">s = ${fmt(Math.min(a.cono.s, 999), 2)} m</text>`;
   // Escala horizontal
   svg += `<text x="${X(0)}" y="${H - 8}" text-anchor="middle" class="t-chica">0</text><text x="${xp}" y="${H - 8}" text-anchor="middle" class="t-chica">${fmt(a.L, 0)} m</text><text x="${X(xMax)}" y="${H - 8}" text-anchor="end" class="t-chica">${fmt(xMax, 0)} m</text>`;
@@ -1059,9 +1172,74 @@ function corteAcuifero() {
   return svg + leyenda;
 }
 
+/** Corte del embalse a lo largo del río: presa, niveles de operación, tubería forzada y central. */
+function presaSVG() {
+  const rep = r.represa;
+  const W = 360;
+  const H = 214;
+  const xP = 226;                                  // cara de aguas arriba de la presa
+  const yL = 178;                                  // lecho del río al pie de la presa
+  const esc = 128 / Math.max(rep.Hp, 1);           // px por metro: la presa ocupa 128 px
+  const pend = 0.56;                               // el lecho sube aguas arriba (px de alto por px de largo)
+  const Y = (h) => yL - h * esc;
+  const xCola = (h) => Math.max(4, xP - (h * esc) / pend);
+  const corona = 9;
+  const xPie = xP + corona + 0.55 * rep.Hp * esc;  // pie de aguas abajo
+  const yTerreno = (x) => (x <= xP ? yL - (xP - x) * pend : yL + Math.min(10, (x - xP) * 0.04));
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" class="svg-red">
+    <defs><marker id="mk-presa" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L6 3 L0 6 z" style="fill:var(--tinta-2)"/></marker></defs>`;
+  // Terreno y lecho
+  const pts = [];
+  for (let x = 0; x <= W; x += 6) pts.push(`${x},${yTerreno(x).toFixed(1)}`);
+  svg += `<path d="M0,${H} L${pts.join(' L')} L${W},${H} Z" style="fill:color-mix(in srgb, var(--ocre) 30%, var(--panel))"/>`;
+  // Agua del embalse
+  const yA = Y(rep.nivel);
+  if (rep.nivel > 0.05) svg += `<path d="M${xCola(rep.nivel).toFixed(1)},${yA.toFixed(1)} L${xP},${yA.toFixed(1)} L${xP},${yL} Z" style="fill:var(--agua)" opacity="0.6"/>`;
+  // Río aguas abajo (lámina exagerada para que se vea)
+  const yR = Math.max(2.5, rep.yAbajo * esc * 6);
+  svg += `<path d="M${xP + corona},${yL - yR} L${W},${yTerreno(W) - yR} L${W},${yTerreno(W)} L${xP + corona},${yL} Z" style="fill:var(--agua)" opacity="0.6"/>`;
+  // Niveles máximo y mínimo de operación
+  for (const [h, txt] of [[rep.hMax, `máximo ${fmt(rep.hMax, 0)} m`], [rep.hMin, `mínimo ${fmt(rep.hMin, 0)} m`]]) {
+    const y = Y(h);
+    svg += `<line x1="${xCola(h).toFixed(1)}" y1="${y.toFixed(1)}" x2="${xP}" y2="${y.toFixed(1)}" style="stroke:var(--tinta-2)" stroke-width="0.9" stroke-dasharray="4 3"/>`;
+    svg += `<text x="${(xCola(h) + 3).toFixed(1)}" y="${(y - 3).toFixed(1)}" class="t-chica t-halo">${txt}</text>`;
+  }
+  // Presa (concreto) y aliviadero en la corona
+  svg += `<path d="M${xP},${Y(rep.Hp).toFixed(1)} L${xP + corona},${Y(rep.Hp).toFixed(1)} L${xPie.toFixed(1)},${yL + 1} L${xP},${yL + 1} Z" style="fill:color-mix(in srgb, var(--tinta-2) 45%, var(--panel));stroke:var(--tinta-2)" stroke-width="1"/>`;
+  if (rep.Qvert > 1e-6) {
+    svg += `<path d="M${xP + corona},${Y(rep.Hp) + 2} L${xPie - 4},${yL - 2}" style="stroke:var(--agua)" stroke-width="3" opacity="0.85"/>`;
+    svg += `<text x="${xP + corona + 6}" y="${Y(rep.Hp) - 4}" class="t-chica t-halo">aliviadero: ${fmt(rep.Qvert)} m³/s</text>`;
+  }
+  // Tubería forzada: de la toma (bajo el nivel mínimo) a la casa de máquinas, y la central
+  const yToma = Y(rep.hMin * 0.6);
+  const xCasa = Math.min(W - 30, xPie + 4);
+  svg += `<path d="M${xP - 8},${yToma.toFixed(1)} L${xP + 4},${yToma.toFixed(1)} L${xCasa + 6},${yL - 8}" fill="none" style="stroke:var(--tinta)" stroke-width="2.4"/>`;
+  svg += `<rect x="${xCasa}" y="${yL - 18}" width="24" height="16" rx="1.5" style="fill:var(--panel);stroke:var(--tinta)" stroke-width="1"/>`;
+  svg += `<circle cx="${xCasa + 8}" cy="${yL - 8}" r="4" style="fill:${rep.Qturb > 0 ? 'var(--ok)' : 'var(--tinta-2)'}"/>`;
+  svg += `<text x="${xCasa + 12}" y="${yL - 24}" text-anchor="middle" class="t-chica t-sel t-halo">${fmt(rep.P / 1000, 0)} kW</text>`;
+  // Salto neto: del río al pie hasta el nivel del embalse
+  const xH = xP - 16;
+  if (rep.nivel > 1) {
+    svg += `<line x1="${xH}" y1="${(yL - yR).toFixed(1)}" x2="${xH}" y2="${(yA + 2).toFixed(1)}" style="stroke:var(--tinta-2)" stroke-width="1" marker-start="url(#mk-presa)" marker-end="url(#mk-presa)"/>`;
+    svg += `<text x="${xH - 4}" y="${(yA + 0.3 * (yL - yA) + 4).toFixed(1)}" text-anchor="end" class="t-chica t-halo">salto neto ${fmt(rep.Hn, 1)} m</text>`;
+  }
+  // Rótulos de nivel y caudales
+  svg += `<text x="${xP - 4}" y="${(yA - 5).toFixed(1)}" text-anchor="end" class="t-chica t-sel t-halo">h = ${fmt(rep.nivel, 1)} m · ${fmt(rep.V / 1e6, 2)} Mm³</text>`;
+  svg += `<text x="6" y="16" class="t-chica t-halo">Entra: ${fmt(rep.Qin)} m³/s</text>`;
+  svg += `<line x1="8" y1="22" x2="38" y2="22" style="stroke:var(--agua)" stroke-width="1.6" marker-end="url(#mk-presa)"/>`;
+  svg += `<text x="${W - 4}" y="${H - 8}" text-anchor="end" class="t-chica t-halo">Sale: ${fmt(rep.Qsale)} m³/s</text>`;
+  svg += `<text x="${xP + corona / 2}" y="${(Y(rep.Hp) - 5).toFixed(1)}" text-anchor="middle" class="t-chica t-halo">presa ${fmt(rep.Hp, 0)} m</text>`;
+  svg += '</svg>';
+  const leyenda = `<p class="leyenda-plano"><span><i style="background:var(--agua)"></i>agua del embalse y del río</span><span>línea gruesa: tubería forzada a la central</span><span>sin escala horizontal; el río al pie de la presa, exagerado</span></p>`;
+  return {
+    svg: svg + leyenda,
+    leyenda: `Corte a lo largo del río en la presa (km ${P.PRESA.km}). El salto neto es la altura del embalse sobre el río al pie, menos lo que se pierde en la tubería forzada.`,
+  };
+}
+
 const PINTORES = {
   captacion() {
-    const desnivel = p.cotaTanque + sim.nivel - p.cotaRio;
+    const desnivel = p.cotaTanque + sim.nivel - cotaEf();
     const c = r.costo;
     const d = r.desarenador;
     const dmm = d.dMin * 1000;
@@ -1099,7 +1277,7 @@ const PINTORES = {
         ecu.sust(`${i('V')} = ${fmt(lps(p.Qbombeo), 5)} × ${fmt(r.horasDia, 2)} × 3600 × 30 = ${fmt(r.Vmes)} m³`),
         ecu.tipo('Decimales: altura dinámica media del ciclo'),
         ecu.formula(`${Hm} = (${i('z')}<sub>t</sub> + ${i('h')}<sub>medio</sub> − ${i('z')}<sub>río</sub>) + ${i('h')}<sub>f</sub>,  ${i('h')}<sub>medio</sub> = (${i('h')}<sub>a</sub> + ${i('h')}<sub>p</sub>)/2`),
-        ecu.sust(`${Hm} = (${fmt(p.cotaTanque)} + ${fmt(r.nivelMedio, 3)} − ${fmt(p.cotaRio)}) + ${fmt(r.hfBombeo, 3)} = ${fmt(r.Hmedia)} m`),
+        ecu.sust(`${Hm} = (${fmt(p.cotaTanque)} + ${fmt(r.nivelMedio, 3)} − ${fmt(cotaEf())}) + ${fmt(r.hfBombeo, 3)} = ${fmt(r.Hmedia)} m`),
         ecu.tipo('Ecuación lineal: costo de bombeo'),
         ecu.formula(`${i('C')}(${i('V')}) = ${i('m')} · ${i('V')} + ${i('b')}`),
         ecu.formula(`${i('m')} = tarifa · ρ${i('g')}${Hm} / (η · η<sub>m</sub> · 3.6×10⁶)`),
@@ -1474,12 +1652,17 @@ const PINTORES = {
       metricas: metricas([
         ['<b>El río en la bocatoma (km 44)</b>', '', ''],
         ['Escenario de lluvia', R.LLUVIAS[p.lluvia]?.nombre ?? 'Personalizado', ''],
-        ['Cota de la lámina', p.cotaRio, 'm.s.n.m.'],
+        ...(Math.abs(r.represa.dQ) > 1e-9 ? [
+          ['Cota de la lámina sin la represa', p.cotaRio, 'm.s.n.m.'],
+          [r.represa.dQ > 0 ? 'La represa suelta de más' : 'La represa guarda', Math.abs(r.represa.dQ), 'm³/s', '', 3],
+          ['Cota de la lámina con la represa', cotaEf(), 'm.s.n.m.'],
+        ] : [['Cota de la lámina', p.cotaRio, 'm.s.n.m.']]),
         ['Profundidad del agua', b.y, 'm'],
         ['Caudal del río', b.Q, 'm³/s'],
         ['Velocidad media', b.V, 'm/s'],
         ['Lámina sobre la rejilla', rv.capta ? fmt(rv.lamina) : `${fmt(rv.lamina)} (no capta)`, 'm', rv.capta ? 'ok' : 'alerta'],
         ['Parte del río que se bombea', fmt((100 * lps(p.Qbombeo)) / Math.max(b.Q, 1e-9), 2), '%'],
+        ['Agua sobre la vega del cultivo de la llanura', r.huella.loteBaja.profRio > 0 ? fmt(r.huella.loteBaja.profRio) : `no llega (la vega está a la cota ${fmt(H.COTA_VEGA)} m)`, r.huella.loteBaja.profRio > 0 ? 'm' : '', r.huella.loteBaja.profRio > 0 ? 'alerta' : 'ok'],
         ['<b>Sedimento que traen las lluvias</b>', '', ''],
         ['Sedimento en suspensión', p.sedimento, 'mg/L', '', 0],
         ['Sedimento que entra al desarenador', sed.Mentra, 'kg/día', '', 1],
@@ -1513,7 +1696,7 @@ const PINTORES = {
       ecuacion: [
         ecu.tipo('Ecuación de Manning: curva de descarga del río en la bocatoma'),
         ecu.formula(`${i('Q')} = (1/${i('n')})·${i('A')}·${i('R')}<sup>2/3</sup>·${i('S')}<sup>1/2</sup>,  ${i('A')} = ${i('B')}·${i('y')},  ${i('R')} = ${i('A')}/(${i('B')} + 2${i('y')}),  ${i('y')} = ${i('z')}<sub>río</sub> − ${i('z')}<sub>fondo</sub>`),
-        ecu.sust(`${i('y')} = ${fmt(p.cotaRio)} − ${fmt(R.CAUCE.fondo)} = ${fmt(b.y)} m;  ${i('Q')} = (1/${fmt(R.CAUCE.n, 3)}) × ${fmt(b.A)} × ${fmt(b.R, 3)}<sup>2/3</sup> × ${fmt(R.CAUCE.pendiente, 4)}<sup>1/2</sup> = ${fmt(b.Q)} m³/s`),
+        ecu.sust(`${i('y')} = ${fmt(cotaEf())} − ${fmt(R.CAUCE.fondo)} = ${fmt(b.y)} m;  ${i('Q')} = (1/${fmt(R.CAUCE.n, 3)}) × ${fmt(b.A)} × ${fmt(b.R, 3)}<sup>2/3</sup> × ${fmt(R.CAUCE.pendiente, 4)}<sup>1/2</sup> = ${fmt(b.Q)} m³/s`),
         ...(ini ? [
           ecu.tipo('Decimales: mezcla del vertimiento (balance de masa)'),
           ecu.formula(`${i('C')} = (${i('Q')}<sub>r</sub>·${i('C')}<sub>r</sub> + ${i('Q')}<sub>v</sub>·${i('C')}<sub>v</sub>) / (${i('Q')}<sub>r</sub> + ${i('Q')}<sub>v</sub>)`),
@@ -1560,6 +1743,160 @@ const PINTORES = {
           ], { x: { min: 0, max: 50 }, y: { min: 0, max: yMax, paso: 1 } });
         },
         ejes: { xTitulo: 'Distancia desde el nacimiento (km)', yTitulo: 'Coliformes fecales (NMP/100 mL)', formatoX: (v) => fmt(v, 0), formatoY: potencia10 },
+      },
+    };
+  },
+
+  represa() {
+    const rep = r.represa;
+    const ano = r.anoRepresa;
+    const pct = (100 * rep.V) / rep.Vmax;
+    const subeDia = rep.pendienteNivel * 86400;
+    const tendencia = subeDia > 1e-6 ? `sube ${fmt(subeDia, 3)} m al día` : (subeDia < -1e-6 ? `baja ${fmt(-subeDia, 3)} m al día` : 'estable');
+    const tiempo = rep.neto > 1e-9 ? (rep.llena ? 'lleno: lo que sobra sale por el aliviadero' : `se llena en ${fmtTiempo(rep.tLlenar)}`)
+      : (rep.neto < -1e-9 ? `llega al nivel mínimo en ${fmtTiempo(rep.tVaciar)}` : 'no cambia: sale lo mismo que entra');
+    const hayEnergia = rep.Eent > 0;
+    const Qestrella = Math.sqrt(Math.max(0, rep.Hb) / (3 * P.PRESA.kForzada));
+    // Caudal en las tres zonas con la represa y sin ella
+    const ids = Object.keys(R.ZONAS);
+    const hid = r.rio.calidad.hid;
+    const tablaZonas = tablaHTML('Caudal del río en las tres zonas, con la represa y sin ella', ['', 'Alta', 'Media', 'Baja'], [
+      ['Sin la represa', ...ids.map((z) => `${fmt(rep.zonas[z].natural)} m³/s`)],
+      ['Con la represa', ...ids.map((z) => ({ v: `${fmt(rep.zonas[z].conRepresa)} m³/s`, clase: rep.zonas[z].cambio < -0.005 ? 'mal' : (rep.zonas[z].cambio > 0.005 ? 'bien' : '') }))],
+      ['Cambio', ...ids.map((z) => `${rep.zonas[z].cambio > 0 ? '+' : ''}${fmt(100 * rep.zonas[z].cambio, 1)} %`)],
+      ['Profundidad con la represa', ...ids.map((z) => `${fmt(hid[z].y)} m`)],
+      ['Velocidad con la represa', ...ids.map((z) => `${fmt(hid[z].u)} m/s`)],
+    ], { numericas: [1, 2, 3], nota: 'La presa está en el km 7 de la zona alta: el caudal que guarda o suelta cambia el río de ahí hasta el mar. El mismo caudal pesa más en la zona alta, donde el río es más pequeño.' });
+    const tensiones = P.TENSIONES.map((kV) => {
+      const l = P.perdidasLinea(rep.P, kV);
+      const Eent = rep.Emes - (l.perdidas / 1000) * rep.horasMes;
+      return { kV, l, Eent, costo: Eent > 0 ? (p.costoGeneracion * rep.Emes) / Eent + p.costoLinea : Infinity };
+    });
+    const marcarT = P.TENSIONES.indexOf(p.tensionLinea) + 1;
+    const tablaEnergia = tablaHTML('Producir la energía y llevarla a la ciudad', ['', ...P.TENSIONES.map((kV) => `${fmt(kV, 1)} kV`)], [
+      ['Potencia de la central', ...tensiones.map(() => `${fmt(rep.P / 1000, 1)} kW`)],
+      ['Corriente en la línea', ...tensiones.map((t) => `${fmt(t.l.I, 2)} A`)],
+      ['Pérdidas en la línea', ...tensiones.map((t) => ({ v: `${fmt(t.l.perdidas / 1000, 2)} kW (${fmt(100 * t.l.fraccion, 2)} %)`, clase: t.l.fraccion > 0.05 ? 'mal' : '' }))],
+      ['Energía que llega al mes', ...tensiones.map((t) => `${R.miles(t.Eent)} kWh`)],
+      ['Producirla (al mes)', ...tensiones.map(() => `$ ${R.miles(rep.costoGenerar)}`)],
+      ['Llevarla por la línea (al mes)', ...tensiones.map((t) => `$ ${R.miles(p.costoLinea * t.Eent)}`)],
+      ['kWh puesto en la ciudad', ...tensiones.map((t) => (Number.isFinite(t.costo) ? `${fmt(t.costo, 2)} COP` : '—'))],
+      ['Tarifa de la red', ...tensiones.map(() => `${fmt(p.tarifaKWh, 0)} COP`)],
+    ], { numericas: [1, 2], marcar: marcarT, nota: `Con más tensión la corriente baja en proporción y las pérdidas, con su cuadrado: de ${fmt(P.TENSIONES[0], 1)} a ${fmt(P.TENSIONES[1], 1)} kV se pierde ${fmt((P.TENSIONES[1] / P.TENSIONES[0]) ** 2, 1)} veces menos. Son costos de operación: no incluyen construir la presa ni la línea.` });
+    const formas = [
+      ['Bombear del río con energía de la red', rep.agua.red],
+      ['Bombear del río con energía de la represa', hayEnergia ? rep.agua.represa : Infinity],
+      ['Bajarla del embalse por gravedad', rep.agua.gravedad],
+    ];
+    const menor = Math.min(...formas.map(([, v]) => v));
+    const tablaAgua = tablaHTML('Agua para la ciudad: tres formas de operar', ['Forma', 'Al mes', 'Por m³'], formas.map(([t, v]) => ({
+      clase: v === menor ? 'elegida' : '',
+      celdas: [t, Number.isFinite(v) ? `$ ${R.miles(v)}` : 'sin energía', Number.isFinite(v) ? `${fmt(v / Math.max(r.Vmes, 1e-9), 1)} COP` : '—'],
+    })), { numericas: [1, 2], nota: `La ciudad usa ${R.miles(r.Vmes)} m³ al mes. Por gravedad no se paga energía, pero hay que operar ${P.PRESA.distanciaCiudad} km de tubería con ${rep.camaras} cámaras de quiebre de presión (una cada ${P.PRESA.presionTramo} m de desnivel: el embalse está ${R.miles(rep.desnivel)} m por encima del tanque). La fila resaltada es la más barata.` });
+    const tablaAno = tablaHTML(`Un año de operación: ${P.OPERACIONES[p.operacionPresa].toLowerCase()}`, ['Mes', 'Entra', 'Sale', 'Nivel al final', 'Energía'],
+      ano.meses.map((m) => [m.mes, `${fmt(m.Qin)} m³/s`, `${fmt(m.Qout)} m³/s`, { v: `${fmt(m.h, 1)} m`, clase: m.h <= rep.hMin + 0.05 ? 'mal' : '' }, `${R.miles(m.E / 1000)} MWh`]),
+      { numericas: [1, 2, 3, 4], nota: `Caudal medio de cada mes (secas de diciembre a abril, lluvias en mayo y de septiembre a noviembre), empezando en enero con el nivel de ahora. En el año: ${R.miles(ano.Eano / 1000)} MWh.` });
+    const A0 = P.PRESA.aValle;
+    return {
+      metricas: metricas([
+        ['<b>Embalse</b>', '', ''],
+        ['Nivel del agua sobre el lecho', rep.nivel, 'm', rep.nivel >= rep.hMin - 1e-6 ? 'ok' : 'aviso'],
+        ['Niveles de operación', `de ${fmt(rep.hMin, 1)} a ${fmt(rep.hMax, 1)} m`, ''],
+        ['Volumen guardado', rep.V / 1e6, 'millones de m³', '', 3],
+        ['Lleno al', fmt(pct, 1), '%'],
+        ['Área del espejo de agua', rep.A / 1e4, 'ha', '', 1],
+        ['Caudal que entra', rep.Qin, 'm³/s', '', 3],
+        ['Caudal que suelta la presa', rep.Qsale, 'm³/s', rep.Qsale >= rep.Qamb - 1e-9 ? 'ok' : 'alerta', 3],
+        ['Caudal ambiental (mínimo)', rep.Qamb, 'm³/s', '', 3],
+        ['El nivel', tendencia, ''],
+        ['Con este balance', tiempo, ''],
+        ['Evaporación del espejo de agua', rep.Qevap * 1000, 'L/s', '', 1],
+        ['<b>Central hidroeléctrica</b>', '', ''],
+        ['Caudal por las turbinas', rep.Qturb, 'm³/s', rep.Qturb > 0 ? 'ok' : 'aviso', 3],
+        ['Caudal por el aliviadero o el desagüe', rep.Qvert, 'm³/s', '', 3],
+        ['Salto bruto (embalse − río al pie)', rep.Hb, 'm'],
+        ['Pérdida en la tubería forzada', rep.hf, 'm', '', 3],
+        ['Salto neto', rep.Hn, 'm'],
+        ['Potencia eléctrica', rep.P / 1000, 'kW', '', 1],
+        ['Potencia instalada (turbinas llenas, nivel máximo)', rep.PinstW / 1000, 'kW', '', 1],
+        ['Energía al mes', rep.Emes, 'kWh', '', 0],
+        ['Energía en un año (mes a mes)', ano.Eano / 1000, 'MWh', '', 0],
+        ['<b>Línea eléctrica a la ciudad</b>', '', ''],
+        ['Tensión y longitud', `${fmt(p.tensionLinea, 1)} kV, ${P.PRESA.distanciaCiudad} km`, ''],
+        ['Corriente', rep.linea.I, 'A'],
+        ['Potencia que se pierde', `${fmt(rep.linea.perdidas / 1000, 2)} kW (${fmt(100 * rep.linea.fraccion, 2)} %)`, '', rep.linea.fraccion <= 0.05 ? 'ok' : 'aviso'],
+        ['Energía que llega a la ciudad al mes', rep.Eent, 'kWh', '', 0],
+        ['Viviendas que abastece', rep.viviendas, 'viviendas', '', 0],
+        ['<b>Costos de operación de la energía (al mes)</b>', '', ''],
+        ['Producirla', rep.costoGenerar, 'COP', '', 0],
+        ['Llevarla a la ciudad por la línea', p.costoLinea * rep.Eent, 'COP', '', 0],
+        ['kWh puesto en la ciudad', hayEnergia ? rep.costoPuesto : 'sin energía', hayEnergia ? 'COP/kWh' : '', hayEnergia && rep.costoPuesto <= p.tarifaKWh ? 'ok' : 'aviso'],
+        ['Tarifa de la energía de la red', p.tarifaKWh, 'COP/kWh', '', 0],
+        ['<b>Agua para la ciudad (al mes)</b>', '', ''],
+        ['Bombear del río con energía de la red', rep.agua.red, 'COP', '', 0],
+        ['Bombear del río con energía de la represa', hayEnergia ? rep.agua.represa : 'sin energía', hayEnergia ? 'COP' : '', '', 0],
+        ['Bajarla del embalse por gravedad', rep.agua.gravedad, 'COP', '', 0],
+        ['Desnivel del embalse al tanque', rep.desnivel, 'm', '', 0],
+        ['Cámaras de quiebre de presión', rep.camaras, '', '', 0],
+      ]),
+      revision: rep.checks,
+      figura: presaSVG(),
+      tablas: tablaZonas + tablaEnergia + tablaAgua + tablaAno,
+      ecuacion: [
+        ecu.tipo('Ecuación cuadrática: volumen del embalse'),
+        ecu.formula(`${i('V')} = ${i('a')}·${i('h')}²,  ${i('h')} = √(${i('V')}/${i('a')}),  ${i('A')} = d${i('V')}/d${i('h')} = 2·${i('a')}·${i('h')}`),
+        ecu.sust(`${i('V')} = ${R.miles(A0)} × ${fmt(rep.nivel)}² = ${R.miles(rep.V)} m³;  ${i('A')} = 2 × ${R.miles(A0)} × ${fmt(rep.nivel)} = ${R.miles(rep.A)} m²`),
+        ecu.nota('El valle tiene forma de V: con el doble de nivel el embalse guarda cuatro veces más agua.'),
+        ecu.tipo('Ecuación lineal: balance del embalse'),
+        ecu.formula(`d${i('V')}/d${i('t')} = ${i('Q')}<sub>entra</sub> − ${i('Q')}<sub>sale</sub>,  d${i('h')}/d${i('t')} = (${i('Q')}<sub>entra</sub> − ${i('Q')}<sub>sale</sub>)/${i('A')}`),
+        ecu.sust(`d${i('h')}/d${i('t')} = (${fmt(rep.Qin, 3)} − ${fmt(rep.Qsale, 3)}) × 86 400 / ${R.miles(rep.A)} = ${fmt(subeDia, 4)} m/día`),
+        ecu.tipo('Función cúbica: potencia de la central'),
+        ecu.formula(`${i('P')} = ρ${i('g')}·${i('Q')}·${i('H')}<sub>n</sub>·η,  ${i('H')}<sub>n</sub> = ${i('h')} − ${i('y')} − ${i('k')}·${i('Q')}²  ⇒  ${i('P')}(${i('Q')}) = ρ${i('g')}η·(${i('H')}<sub>b</sub>·${i('Q')} − ${i('k')}·${i('Q')}³)`),
+        ecu.sust(`${i('H')}<sub>n</sub> = ${fmt(rep.nivel)} − ${fmt(rep.yAbajo, 3)} − ${P.PRESA.kForzada} × ${fmt(rep.Qturb, 3)}² = ${fmt(rep.Hn, 3)} m;  ${i('P')} = 997.05 × 9.81 × ${fmt(rep.Qturb, 3)} × ${fmt(rep.Hn, 3)} × ${fmt(rep.eta)} = ${fmt(rep.P / 1000, 1)} kW`),
+        ecu.nota(`La derivada se anula en ${i('Q')}* = √(${i('H')}<sub>b</sub>/(3${i('k')})) = ${fmt(Qestrella, 2)} m³/s: con más caudal la pérdida de la tubería forzada se come el salto y la potencia baja.`),
+        ecu.tipo('Ecuación cuadrática: pérdidas de la línea'),
+        ecu.formula(`${i('I')} = ${i('P')}/(√3·${i('U')}·fp),  ${i('P')}<sub>p</sub> = 3·${i('I')}²·${i('r')}·${i('L')}`),
+        ecu.sust(`${i('I')} = ${R.miles(rep.P)} / (√3 × ${R.miles(p.tensionLinea * 1000)} × ${P.PRESA.fp}) = ${fmt(rep.linea.I, 2)} A;  ${i('P')}<sub>p</sub> = 3 × ${fmt(rep.linea.I, 2)}² × ${P.PRESA.rLinea} × ${P.PRESA.distanciaCiudad} = ${fmt(rep.linea.perdidas / 1000, 3)} kW`),
+        ecu.tipo('Función racional: costo del kWh puesto en la ciudad'),
+        ecu.formula(`${i('c')} = ${i('c')}<sub>prod</sub>·${i('E')}/${i('E')}<sub>ciudad</sub> + ${i('c')}<sub>línea</sub>,  ${i('E')}<sub>ciudad</sub> = (${i('P')} − ${i('P')}<sub>p</sub>)·24·30`),
+        hayEnergia
+          ? ecu.sust(`${i('c')} = ${fmt(p.costoGeneracion, 0)} × ${R.miles(rep.Emes)} / ${R.miles(rep.Eent)} + ${fmt(p.costoLinea, 0)} = ${fmt(rep.costoPuesto, 2)} COP/kWh`)
+          : ecu.sust('La central no produce energía con el nivel o el caudal de ahora.'),
+        ecu.nota('Costos de operación de referencia (editables): no incluyen la inversión. Como comparación, el costo nivelado de la energía de las hidroeléctricas nuevas en el mundo, que sí la incluye, fue de unos 0.057 dólares por kWh en 2024 (IRENA, 2025). El consumo de una vivienda es el de subsistencia por debajo de 1 000 m.s.n.m.: 173 kWh al mes (UPME).'),
+      ].join(''),
+      leyenda: 'Potencia de la central según el caudal que pasa por las turbinas, con el embalse en tres niveles. La pérdida de la tubería forzada crece con Q²: la potencia es una función cúbica con un máximo. La raya vertical es la capacidad de las turbinas.',
+      grafica(g) {
+        const c = paleta();
+        const Qmax = Math.max(1.5 * p.QturbMax, Math.sqrt(rep.hMax / P.PRESA.kForzada));
+        const curva = (h) => Array.from({ length: 81 }, (_, k) => {
+          const Q = (Qmax * k) / 80;
+          return { x: Q, y: P.central(Q, h, Q, rep.eta).P / 1000 };
+        });
+        const pMax = P.central(Math.sqrt(rep.hMax / (3 * P.PRESA.kForzada)), rep.hMax, Math.sqrt(rep.hMax / (3 * P.PRESA.kForzada)), rep.eta).P / 1000;
+        const yTope = Math.max(100, Math.ceil((1.1 * pMax) / 200) * 200);
+        actualizarGrafica(g, [
+          serieLinea(`Nivel de ahora (${fmt(rep.nivel, 1)} m)`, curva(rep.nivel), c.agua, { ancho: 2.5 }),
+          serieLinea(`Nivel máximo (${fmt(rep.hMax, 1)} m)`, curva(rep.hMax), c.ok, { punteada: true, ancho: 1.5 }),
+          serieLinea(`Nivel mínimo (${fmt(rep.hMin, 1)} m)`, curva(rep.hMin), c.ocre, { punteada: true, ancho: 1.5 }),
+          serieLinea('Capacidad de las turbinas', [{ x: p.QturbMax, y: 0 }, { x: p.QturbMax, y: yTope }], c.tinta2, { punteada: true, ancho: 1 }),
+          seriePuntos('Ahora', [{ x: rep.Qturb, y: rep.P / 1000 }], c.alerta),
+        ], { x: { min: 0, max: Math.ceil(Qmax) }, y: { min: 0, max: yTope } });
+      },
+      ejes: { xTitulo: 'Caudal por las turbinas (m³/s)', yTitulo: 'Potencia (kW)', formatoX: (v) => fmt(v, 1), formatoY: (v) => fmt(v, 0) },
+      extra: {
+        leyenda: `Un año de operación con la presa en «${P.OPERACIONES[p.operacionPresa].toLowerCase()}»: caudal medio de cada mes que entra al embalse y que suelta la presa, y el río en la bocatoma con la represa y sin ella.`,
+        grafica(g) {
+          const c = paleta();
+          const M12 = ano.meses.map((m, k) => ({ ...m, x: k + 1 }));
+          const yMax = techoRedondo(Math.max(...M12.map((m) => Math.max(m.bocNatural, m.bocConRepresa, m.Qout))) * 1.05);
+          actualizarGrafica(g, [
+            serieLinea('Entra al embalse', M12.map((m) => ({ x: m.x, y: m.Qin })), c.ocre, { ancho: 2 }),
+            serieLinea('Sale de la presa', M12.map((m) => ({ x: m.x, y: m.Qout })), c.agua, { ancho: 2.5 }),
+            serieLinea('Río en la bocatoma sin represa', M12.map((m) => ({ x: m.x, y: m.bocNatural })), c.tinta2, { punteada: true, ancho: 1.5 }),
+            serieLinea('Río en la bocatoma con represa', M12.map((m) => ({ x: m.x, y: m.bocConRepresa })), c.ok, { ancho: 2 }),
+          ], { x: { min: 1, max: 12, paso: 1 }, y: { min: 0, max: yMax } });
+        },
+        ejes: { xTitulo: 'Mes', yTitulo: 'Caudal (m³/s)', formatoX: (v) => P.MESES[Math.round(v) - 1]?.nombre ?? '', formatoY: (v) => fmt(v, 1) },
       },
     };
   },
@@ -1816,6 +2153,150 @@ const PINTORES = {
     };
   },
 
+  huella() {
+    const h = r.huella;
+    const hh = h.hh;
+    const d = h.d;
+    const c = h.carbono;
+    const cultivo = G.CULTIVOS[h.cultivo];
+    const zona = R.ZONAS[h.zona];
+    const suma = (x) => (x ? x.verde + x.azul + x.gris : 0);
+    const ref = suma(d.ref);
+    const relacion = ref ? hh.total / ref : null;
+    const ids = Object.keys(R.ZONAS);
+    const marcar = ids.indexOf(h.zona) + 1;
+    const pct = (x) => `${fmt(100 * x, 0)} %`;
+    const barra = (x) => {
+      const t = Math.max(1e-9, x.verde + x.azul + x.gris);
+      return `<span class="barra-hh" aria-hidden="true"><i class="v" style="width:${((100 * x.verde) / t).toFixed(1)}%"></i><i class="a" style="width:${((100 * x.azul) / t).toFixed(1)}%"></i><i class="g" style="width:${((100 * x.gris) / t).toFixed(1)}%"></i></span>`;
+    };
+    const tablaCultivos = tablaHTML(`Huella hídrica de cada cultivo en la ${zona.nombre.toLowerCase()} (m³/t)`, ['Cultivo', 'Verde', 'Azul', 'Gris', 'Total', 'Mundial'],
+      h.porCultivo.map((x) => ({
+        clase: x.id === h.cultivo ? 'elegida' : '',
+        celdas: [
+          { v: `${x.nombre.split(' (')[0]}${barra(x.hh)}`, nota: x.apto ? '' : 'no se da en esta zona', clase: x.apto ? '' : 'tenue' },
+          R.miles(x.hh.verde), R.miles(x.hh.azul), R.miles(x.hh.gris),
+          { v: R.miles(x.hh.total), clase: x.ref && x.hh.total > 1.5 * suma(x.ref) ? 'mal' : '' }, x.ref ? R.miles(suma(x.ref)) : '—',
+        ],
+      })), { numericas: [1, 2, 3, 4, 5], nota: 'La barra de colores muestra qué parte de la huella es verde (lluvia), azul (riego) y gris (dilución del nitrógeno). El café y el cacao rinden poco por hectárea: necesitan mucha agua por tonelada. Promedio mundial: Mekonnen y Hoekstra (2011).' });
+    const tablaZonas = tablaHTML(`${cultivo.nombre} en las tres zonas`, ['', 'Alta', 'Media', 'Baja'], [
+      ['Huella verde', ...h.porZona.map((x) => `${R.miles(x.hh.verde)} m³/t`)],
+      ['Huella azul', ...h.porZona.map((x) => `${R.miles(x.hh.azul)} m³/t`)],
+      ['Huella gris', ...h.porZona.map((x) => `${R.miles(x.hh.gris)} m³/t`)],
+      ['Huella total', ...h.porZona.map((x) => `${R.miles(x.hh.total)} m³/t`)],
+      ['Distancia a la ciudad', ...h.porZona.map((x) => `${x.carbono.dist} km`)],
+      ['Viajes de camión al año', ...h.porZona.map((x) => R.miles(x.carbono.viajes))],
+      ['CO₂ del transporte', ...h.porZona.map((x) => `${fmt(x.carbono.porTonelada, 2)} kg/t`)],
+      ['Costo del carbono al año', ...h.porZona.map((x) => `$ ${R.miles(x.carbono.costo)}`)],
+      ['¿Se da el cultivo?', ...h.porZona.map((x) => (x.apto ? { v: '✓ sí', clase: 'bien' } : { v: '✗ no', clase: 'mal' }))],
+    ], { numericas: [1, 2, 3], marcar, nota: 'Arriba llueve más y hace menos calor: el cultivo necesita menos riego (huella azul). Pero la cosecha viaja más lejos y por vías de montaña: más CO₂ por tonelada.' });
+    const tablaInundacion = tablaHTML('Cuánto aguanta cada cultivo encharcado', ['Cultivo', 'Aguanta', 'Creciente', 'Arroyo', 'CO₂ kg/t'],
+      h.porCultivo.map((x) => ({
+        clase: x.id === h.cultivo ? 'elegida' : '',
+        celdas: [x.nombre.split(' (')[0], textoDias(H.DATOS_CULTIVO[x.id].tolerancia),
+          { v: pct(x.danoRio), clase: x.danoRio > 0.005 ? 'mal' : '' }, { v: pct(x.danoArroyo), clase: x.danoArroyo > 0.005 ? 'mal' : '' }, fmt(x.carbono.porTonelada, 2)],
+      })), {
+        numericas: [1, 2, 3, 4],
+        nota: h.zona === 'baja'
+          ? `Cosecha que se pierde con el agua de ahora sobre el lote: ${fmt(h.profRio)} m de la creciente del río durante ${fmt(p.diasInundacion, 1)} días y ${fmt(h.profArroyo)} m del desborde del arroyo durante unas ${fmt(H.DIAS_ARROYO * 24, 0)} horas. El daño crece con la profundidad (completo desde ${fmt(H.PROF_DANO)} m) y con los días frente a lo que aguanta cada cultivo.`
+          : 'En la zona alta y en la media el lote está en la ladera, por encima de la creciente: no se inunda. En la zona baja el lote está en la vega del río y junto al canal del arroyo.',
+      });
+    const relTexto = relacion !== null ? `${fmt(relacion, 2)} veces` : 'sin dato';
+    return {
+      metricas: metricas([
+        ['<b>Cultivo</b>', '', ''],
+        ['Cultivo y zona', `${cultivo.nombre} en la ${zona.nombre.toLowerCase()}`, '', G.cultivoApto(h.cultivo, h.zona) ? '' : 'aviso'],
+        ['Rendimiento (promedio nacional)', d.rend, `t/ha de ${d.producto}`, '', 1],
+        ['Cosechas al año', d.ciclos, '', '', 0],
+        ['Evapotranspiración del ciclo ET<sub>c</sub>', hh.agua.ETc, 'mm', '', 0],
+        ['· la cubre la lluvia (verde)', hh.agua.verde, 'mm', '', 0],
+        ['· la cubre el riego (azul)', hh.agua.azul, 'mm', '', 0],
+        ['Nitrógeno aplicado', hh.N, 'kg/ha por cosecha', '', 0],
+        ['<b>Huella hídrica por tonelada</b>', '', ''],
+        ['Verde: lluvia que usa el cultivo', hh.verde, 'm³/t', '', 0],
+        ['Azul: riego que consume', hh.azul, 'm³/t', '', 0],
+        ['Gris: agua para diluir el nitrógeno', hh.gris, 'm³/t', '', 0],
+        ['Total', hh.total, 'm³/t', relacion !== null && relacion > 1.5 ? 'aviso' : 'ok', 0],
+        ['Promedio mundial', ref || 'sin dato', ref ? 'm³/t' : '', '', 0],
+        ['Frente al promedio mundial', relTexto, ''],
+        ['<b>Agua al año</b>', '', ''],
+        ['Cosecha al año', h.produccion, 't', '', 1],
+        ['Agua verde (lluvia)', h.aguaAno.verde, 'm³', '', 0],
+        ['Agua azul (riego que se consume)', h.aguaAno.azul, 'm³', '', 0],
+        ['Agua gris (para diluir el nitrógeno)', h.aguaAno.gris, 'm³', '', 0],
+        ['El agua azul frente a lo que bombea el acueducto', `${fmt((100 * h.aguaAno.azul) / Math.max(1, 12 * r.Vmes), 1)} %`, ''],
+        ['<b>Huella de carbono del transporte</b>', '', ''],
+        ['Distancia por carretera a la ciudad', c.dist, 'km', '', 0],
+        ['Viajes de camión al año (ida y vuelta)', c.viajes, '', '', 0],
+        ['ACPM al año', c.litros, 'L', '', 0],
+        ['CO₂ al año', c.kgCO2, 'kg', '', 0],
+        ['CO₂ por tonelada', c.porTonelada, 'kg/t'],
+        ['Costo del carbono al año', c.costo, 'COP', '', 0],
+        ['<b>Inundación del lote</b>', '', ''],
+        ['Dónde está el lote', h.zona === 'baja' ? `En la vega del río (cota ${fmt(H.COTA_VEGA)} m) y junto al canal del arroyo` : 'En la ladera, por encima de la creciente', ''],
+        ['Agua del río sobre el lote', h.profRio, 'm', h.profRio > 0 ? 'alerta' : 'ok'],
+        ['Agua del arroyo sobre el lote', h.profArroyo, 'm', h.profArroyo > 0 ? 'alerta' : 'ok'],
+        ['El cultivo aguanta encharcado', textoDias(d.tolerancia), ''],
+        ['Cosecha perdida', 100 * h.perdida, '%', h.perdida > 0.005 ? 'alerta' : 'ok', 1],
+        ['Toneladas perdidas al año', h.perdidaT, 't', '', 1],
+        h.perdida >= 0.999
+          ? ['Huella con la cosecha que queda', 'no queda cosecha', '', 'alerta']
+          : ['Huella con la cosecha que queda', h.hhInund.total, 'm³/t', h.perdida > 0.005 ? 'aviso' : '', 0],
+      ]),
+      revision: h.checks,
+      tablas: tablaCultivos + tablaZonas + tablaInundacion,
+      ecuacion: [
+        ecu.tipo('Función racional: huella verde y azul'),
+        ecu.formula(`HH<sub>verde</sub> = 10·ET<sub>verde</sub>/${i('Y')},  HH<sub>azul</sub> = 10·ET<sub>azul</sub>/${i('Y')}  (1 mm sobre 1 ha son 10 m³)`),
+        ecu.sust(`HH<sub>verde</sub> = 10 × ${fmt(hh.agua.verde, 1)} / ${fmt(d.rend, 1)} = ${fmt(hh.verde, 1)};  HH<sub>azul</sub> = 10 × ${fmt(hh.agua.azul, 1)} / ${fmt(d.rend, 1)} = ${fmt(hh.azul, 1)} m³/t`),
+        ecu.nota('Cada día del ciclo la lluvia efectiva cubre lo que puede de la evapotranspiración del cultivo (verde); el resto lo pone el riego (azul). Lo que se pierde al regar vuelve a la cuenca y no cuenta.'),
+        ecu.tipo('Ecuación lineal: huella gris (nitrógeno que se lava)'),
+        ecu.formula(`HH<sub>gris</sub> = (α·${i('N')} / (${i('c')}<sub>máx</sub> − ${i('c')}<sub>nat</sub>)) / ${i('Y')}`),
+        ecu.sust(`HH<sub>gris</sub> = (${H.ALFA_N} × ${fmt(hh.N, 0)} / (${H.CMAX_N} − ${H.CNAT_N}) mg/L) / ${fmt(d.rend, 1)} = ${R.miles(hh.grisHa)} m³/ha / ${fmt(d.rend, 1)} = ${fmt(hh.gris, 1)} m³/t`),
+        ecu.tipo('Función escalonada: viajes y CO₂ del transporte'),
+        ecu.formula(`viajes = ⌈${i('T')}/${i('C')}⌉,  ACPM = viajes·${i('d')}·(${i('c')}<sub>ida</sub> + ${i('c')}<sub>vuelta</sub>)·${i('f')},  CO₂ = ${H.FACTOR_ACPM}·ACPM,  costo = CO₂·tarifa`),
+        ecu.sust(`viajes = ⌈${fmt(h.produccion, 1)} / ${fmt(p.capacidadCamion, 0)}⌉ = ${c.viajes};  ACPM = ${c.viajes} × ${c.dist} × (${H.CAMION.consumoCargado} + ${H.CAMION.consumoVacio}) × ${fmt(c.f, 2)} = ${fmt(c.litros, 1)} L;  CO₂ = ${fmt(c.kgCO2, 1)} kg;  costo = $ ${fmt(c.costo, 0)}`),
+        ecu.tipo('Función por tramos: daño por inundación'),
+        ecu.formula(`daño = mín(1, días/tolerancia) · mín(1, ${i('h')}/${fmt(H.PROF_DANO)}),  pérdida = 1 − (1 − daño<sub>río</sub>)·(1 − daño<sub>arroyo</sub>)`),
+        ecu.formula(`${i('h')}<sub>río</sub> = ${i('z')}<sub>río</sub> − ${fmt(H.COTA_VEGA)},  ${i('h')}<sub>arroyo</sub> = (${i('Q')}<sub>exceso</sub>/(1.7·${H.L_DESBORDE}))<sup>2/3</sup> (vertedero de cresta ancha)`),
+        ecu.sust(`${i('h')}<sub>río</sub> = ${fmt(h.profRio)} m (${fmt(h.dias, 1)} días);  ${i('h')}<sub>arroyo</sub> = ${fmt(h.profArroyo)} m (${fmt(H.DIAS_ARROYO * 24, 0)} h);  pérdida = 1 − (1 − ${fmt(h.danoRio, 3)}) × (1 − ${fmt(h.danoArroyo, 3)}) = ${fmt(100 * h.perdida, 1)} %`),
+        ecu.nota('Fuentes: método de la huella hídrica de Hoekstra y otros (2011), promedios mundiales de Mekonnen y Hoekstra (2011), rendimientos de las Evaluaciones Agropecuarias de 2025 (UPRA, 2026, preliminares), factor de emisión del ACPM del IPCC (2006) y tarifa del impuesto al carbono de 2026 (DIAN). Los días que aguanta cada cultivo encharcado son aproximados.'),
+      ].join(''),
+      leyenda: `Huella hídrica de ${cultivo.nombre.toLowerCase()} según el rendimiento: con el mismo clima, la misma agua repartida en más toneladas da una huella menor (función racional, una hipérbola).`,
+      grafica(g) {
+        const cc = paleta();
+        const Ys = Array.from({ length: 81 }, (_, k) => d.rend * (0.3 + (1.9 * k) / 80));
+        const aguaHa = 10 * (hh.agua.verde + hh.agua.azul);
+        const yMax = techoRedondo(Math.max(2.4 * hh.total, 1.2 * ref, hh.hhInund?.total ?? 0));
+        const conPerdida = h.perdida > 0.005 && h.perdida < 0.999;
+        actualizarGrafica(g, [
+          serieLinea('Huella total', Ys.map((Y) => ({ x: Y, y: Math.min(yMax, (aguaHa + hh.grisHa) / Y) })), cc.agua, { ancho: 2.5 }),
+          serieLinea('Verde + azul (sin la gris)', Ys.map((Y) => ({ x: Y, y: Math.min(yMax, aguaHa / Y) })), cc.ok, { punteada: true, ancho: 1.5 }),
+          ...(ref ? [serieLinea(`Promedio mundial (${R.miles(ref)})`, [{ x: Ys[0], y: ref }, { x: Ys[80], y: ref }], cc.tinta2, { punteada: true, ancho: 1 })] : []),
+          seriePuntos('Rendimiento nacional', [{ x: d.rend, y: hh.total }], cc.alerta),
+          ...(conPerdida ? [seriePuntos('Con la cosecha que deja la inundación', [{ x: d.rend * (1 - h.perdida), y: Math.min(yMax, h.hhInund.total) }], cc.ocre)] : []),
+        ], { x: { min: 0, max: Math.ceil(Ys[80]) }, y: { min: 0, max: yMax } });
+      },
+      ejes: { xTitulo: 'Rendimiento (t/ha por cosecha)', yTitulo: 'Huella hídrica (m³/t)', formatoX: (v) => fmt(v, v < 10 ? 1 : 0), formatoY: (v) => fmt(v, 0) },
+      extra: {
+        leyenda: `Cosecha que se pierde según el agua sobre el lote, con una creciente de ${fmt(p.diasInundacion, 1)} días: depende de cuánto aguanta cada cultivo encharcado. El punto es la creciente de ahora.`,
+        grafica(g) {
+          const cc = paleta();
+          const hs = Array.from({ length: 61 }, (_, k) => (0.6 * k) / 60);
+          const curva = (id, dias) => hs.map((x) => ({ x, y: 100 * H.danoInundacion(id, x, dias) }));
+          const otros = ['arroz', 'palma'].filter((id) => id !== h.cultivo);
+          actualizarGrafica(g, [
+            serieLinea(`${cultivo.nombre.split(' (')[0]} (${textoDias(d.tolerancia)})`, curva(h.cultivo, p.diasInundacion), cc.alerta, { ancho: 2.5 }),
+            ...otros.map((id, k) => serieLinea(`${G.CULTIVOS[id].nombre.split(' (')[0]} (${textoDias(H.DATOS_CULTIVO[id].tolerancia)})`, curva(id, p.diasInundacion), k ? cc.ok : cc.ocre, { punteada: true, ancho: 1.5 })),
+            serieLinea(`${cultivo.nombre.split(' (')[0]} con el arroyo (${fmt(H.DIAS_ARROYO * 24, 0)} h)`, curva(h.cultivo, H.DIAS_ARROYO), cc.agua, { ancho: 1.5 }),
+            seriePuntos('Creciente del río ahora', [{ x: Math.min(0.6, h.profRio), y: 100 * h.danoRio }], cc.alerta),
+          ], { x: { min: 0, max: 0.6 }, y: { min: 0, max: 100 } });
+        },
+        ejes: { xTitulo: 'Agua sobre el lote (m)', yTitulo: 'Cosecha perdida (%)', formatoX: (v) => fmt(v, 2), formatoY: (v) => fmt(v, 0) },
+      },
+    };
+  },
+
   acuifero() {
     const a = r.acuifero;
     const est = a.est;
@@ -1836,7 +2317,9 @@ const PINTORES = {
     const tViajeTxt = a.llega ? fmtTiempo(a.tViaje * 86400) : 'no llega';
     return {
       metricas: metricas([
-        ['<b>Capas del terreno</b>', '', ''],
+        ['<b>Zona y capas del terreno</b>', '', ''],
+        ['Zona del río', `${R.ZONAS[a.zona].nombre}: ${DESCRIPCION_ACUIFERO[a.zona]}`, ''],
+        ...(a.zona === 'baja' ? [] : [['Terreno junto al río', `${fmt(a.terreno - R.CAUCE.fondo, 1)} m sobre el lecho`, '']]),
         [libre ? 'Zona no saturada (sobre el agua)' : 'Suelo', `${suelo.nombre}, ${fmt(est.d, 1)} m`, ''],
         ...(libre ? [] : [['Capa de arcilla (confina el acuífero)', fmt(est.e, 1), 'm']]),
         ['Acuífero', `${a.mat.nombre}, ${fmt(est.b, 1)} m`, ''],
@@ -1844,7 +2327,7 @@ const PINTORES = {
         ['Porosidad efectiva n<sub>e</sub>', a.mat.ne, ''],
         ['Transmisividad T = K·b', a.K * est.b, 'm²/día', '', 0],
         ['<b>El río y el acuífero</b>', '', ''],
-        ['Nivel del río', a.hRio, 'm.s.n.m.'],
+        [a.zona === 'baja' ? 'Nivel del río' : 'Nivel del río (lecho a la cota 1.00 m)', a.hRio, 'm.s.n.m.'],
         [libre ? 'Nivel freático lejos del río' : 'Nivel piezométrico lejos del río', est.nivel, 'm.s.n.m.'],
         ['Diferencia río − acuífero', a.dh, 'm'],
         ['Intercambio', regimen, '', a.regimen === 'ganador' ? 'aviso' : 'ok'],
@@ -1896,7 +2379,7 @@ const PINTORES = {
         ecu.tipo('Decimales: infiltración desde la superficie y vulnerabilidad (GOD)'),
         ecu.formula(`${i('v')} = ${i('K')}/${i('n')}<sub>e</sub>,  ${i('t')} = ${i('d')}/${i('v')},  GOD = ${i('G')}·${i('O')}·${i('D')}`),
         ecu.sust(`${i('v')} = ${suelo.K} / ${suelo.ne} = ${fmt(v.v, v.v < 1 ? 3 : 2)} m/día;  ${i('t')} = ${fmt(v.d, 1)} / ${fmt(v.v, v.v < 1 ? 3 : 2)}${v.tipo.capa ? ' + capa de arcilla' : ''} = ${fmt(v.t, 2)} días;  GOD = ${v.G} × ${v.O} × ${v.D} = ${fmt(v.god)}`),
-        ecu.nota(`En el suelo los coliformes mueren (${R.K_SUELO.coliformes} 1/día) y se filtran (${suelo.remocion} unidades logarítmicas por metro); los nitratos no se degradan. Se toma la peor agua del río en la zona baja, que es la que recarga el acuífero. El radio de Sichardt es una aproximación para un pozo que lleva tiempo bombeando; en un estudio real se hace una prueba de bombeo.`),
+        ecu.nota(`En el suelo los coliformes mueren (${R.K_SUELO.coliformes} 1/día) y se filtran (${suelo.remocion} unidades logarítmicas por metro); los nitratos no se degradan. Se toma la peor agua del río en la ${R.ZONAS[a.zona].nombre.toLowerCase()}, que es la que recarga el acuífero${a.zona === 'baja' ? '' : '; en esta zona las cotas se miden desde un lecho a la cota 1.00 m, como en la bocatoma, para comparar las tres zonas'}. El radio de Sichardt es una aproximación para un pozo que lleva tiempo bombeando; en un estudio real se hace una prueba de bombeo.`),
       ].join(''),
       leyenda: 'Nivel del agua subterránea desde el río (a la izquierda) hasta más allá del pozo: sin bombear y con el pozo bombeando. El hueco alrededor del pozo es el cono de abatimiento.',
       grafica(g) {
@@ -1910,9 +2393,9 @@ const PINTORES = {
           serieLinea('Terreno (zona sin agua)', xs.map((x) => ({ x, y: terrenoCorte(x) })), c.ocre, { relleno: '+1', colorRelleno: `${c.ocre}38` }),
           serieLinea('Nivel con el pozo (agua debajo)', xs.map((x) => ({ x, y: Math.max(piso, nivelCorte(a, x)) })), c.agua, { ancho: 2.5, relleno: 'start', colorRelleno: `${c.agua}2e` }),
           serieLinea('Nivel sin bombear', xs.map((x) => ({ x, y: x < 0 ? nivelCorte(a, x) : A.nivelNatural(a, x) })), c.agua, { punteada: true, ancho: 1 }),
-          serieLinea('Pozo', [{ x: a.L, y: A.COTA_LLANURA + 0.5 }, { x: a.L, y: piso }], c.alerta, { ancho: 1.5 }),
+          serieLinea('Pozo', [{ x: a.L, y: a.terreno + 0.5 }, { x: a.L, y: piso }], c.alerta, { ancho: 1.5 }),
           seriePuntos('Nivel del río', [{ x: RIO_CORTE.centro, y: a.hRio }], c.agua),
-        ], { x: { min: -20, max: xMax }, y: { min: piso, max: Math.ceil(A.COTA_LLANURA + 1.5) } });
+        ], { x: { min: -20, max: xMax }, y: { min: piso, max: Math.ceil(a.terreno + 1.5) } });
       },
       ejes: { xTitulo: 'Distancia desde la orilla del río (m)', yTitulo: 'Cota (m.s.n.m.)', formatoX: (x) => fmt(x, 0), formatoY: (y) => fmt(y, 1) },
       extra: {
@@ -2007,6 +2490,11 @@ function pintarDiseno(f, datos) {
   if (f.tablas && datos.tablas) setHTML(f.tablas, datos.tablas);
   if (f.perfil && datos.perfil) setHTML(f.perfil, datos.perfil);
   if (f.corte && datos.corte) setHTML(f.corte, datos.corte);
+  if (f.figura && datos.figura) {
+    setHTML(f.figura, datos.figura.svg);
+    const pie = f.figura.parentElement.querySelector('figcaption');
+    if (pie.textContent !== datos.figura.leyenda) pie.textContent = datos.figura.leyenda;
+  }
   if (datos.red) {
     setHTML(f.plano, datos.red.plano);
     setHTML(f.zanja, datos.red.zanja.svg);
@@ -2070,7 +2558,7 @@ function crearFichaDatos(t, f) {
     <div class="acciones exportar">
       <button type="button" class="boton primario" data-accion="excel">Descargar Excel (.xlsx)</button>
     </div>
-    <p class="nota-datos" data-rol="estado-excel" aria-live="polite">El libro trae ocho hojas: resumen, parámetros y resultados, serie de tiempo, arranques y paradas, ciclo y costo con fórmulas, revisión del diseño, cantidades de obra y perfil de calidad del río.</p>
+    <p class="nota-datos" data-rol="estado-excel" aria-live="polite">El libro trae doce hojas: resumen, parámetros y resultados, serie de tiempo, arranques y paradas, ciclo y costo con fórmulas, revisión del diseño, cantidades de obra, perfil de calidad del río, represa y energía con fórmulas, el embalse mes a mes, la huella hídrica con fórmulas y la huella por cultivo.</p>
     <h3>Registro de la simulación</h3>
     <div class="control">
       <label for="c-intervalo">Registrar una fila cada</label>
@@ -2234,6 +2722,18 @@ const CONSTANTES = [
   ['Lconexion', 'Distancia en la que el nivel freático se une al río', 'm', 0, () => A.L_CONEXION],
   ['radioPozo', 'Radio del pozo', 'm', 2, () => A.RADIO_POZO],
   ['kAcuifero', 'Muerte de coliformes en el agua subterránea', '1/día', 2, () => A.K_COLIFORMES_ACUIFERO],
+  ['presaKm', 'Sitio de la presa (km del río)', 'km', 0, () => P.PRESA.km],
+  ['presaLecho', 'Cota del lecho del río en la presa', 'm.s.n.m.', 0, () => P.PRESA.cotaLecho],
+  ['aValle', 'Coeficiente del valle del embalse a (V = a·h²)', 'm³/m²', 0, () => P.PRESA.aValle],
+  ['kForzada', 'Pérdida de la tubería forzada k (h = k·Q²)', 's²/m⁵', 2, () => P.PRESA.kForzada],
+  ['Lciudad', 'Longitud de la línea y de la tubería hasta la ciudad', 'km', 0, () => P.PRESA.distanciaCiudad],
+  ['rLinea', 'Resistencia del conductor de la línea', 'Ω/km', 2, () => P.PRESA.rLinea],
+  ['fp', 'Factor de potencia de la línea', '', 2, () => P.PRESA.fp],
+  ['consumoVivienda', 'Consumo de subsistencia de una vivienda', 'kWh/mes', 0, () => P.PRESA.consumoVivienda],
+  ['cotaVega', 'Cota de la vega del lote de la zona baja', 'm.s.n.m.', 2, () => H.COTA_VEGA],
+  ['alfaN', 'Fracción del nitrógeno que se lava α', '', 2, () => H.ALFA_N],
+  ['cmaxN', 'Concentración máxima de nitratos (como N)', 'mg/L', 1, () => H.CMAX_N],
+  ['factorACPM', 'Factor de emisión del ACPM', 'kg CO₂/L', 2, () => H.FACTOR_ACPM],
   ['rho', 'Densidad del agua ρ (25 °C)', 'kg/m³', 2, () => M.RHO],
   ['mu', 'Viscosidad del agua μ (25 °C)', 'Pa·s', 5, () => M.MU],
   ['g', 'Gravedad g', 'm/s²', 2, () => M.G],
@@ -2348,7 +2848,7 @@ async function exportarExcel(boton) {
         ['Bomba del acueducto', `${bA.N} × ${bA.motor.hp} HP${bA.reserva ? ' + 1 de reserva' : ''}, ${B.TIPOS_BOMBA[bA.tipoId].corto.toLowerCase()}`],
         ['Potencia eléctrica real al bombear', r.potenciaElectrica / 1000, 'kW'],
         ['Criterios de diseño que se cumplen', `${cumplen} de ${r.revisionTotal.length}`],
-        ['Río en la bocatoma', `cota ${fmt(p.cotaRio)} m, ${fmt(r.rio.boc.Q)} m³/s, ${R.miles(p.sedimento)} mg/L de sedimento`],
+        ['Río en la bocatoma', `cota ${fmt(cotaEf())} m, ${fmt(r.rio.boc.Q)} m³/s, ${R.miles(p.sedimento)} mg/L de sedimento`],
         ['Coliformes fecales en la bocatoma', Math.round(cal.bocatoma.CF), 'NMP/100 mL', 0],
         ['Oxígeno disuelto mínimo del río', cal.odMin.od, 'mg/L'],
         ['Vertimiento', cal.inicio ? `${cal.tipo.nombre}, ${fmt(p.Qvert, 1)} L/s, ${R.PUNTOS_VERTIMIENTO[p.vertZona].toLowerCase()}` : cal.tipo.nombre],
@@ -2356,13 +2856,18 @@ async function exportarExcel(boton) {
         ['Río y acuífero', { perdedor: 'el río recarga el acuífero', ganador: 'el acuífero alimenta al río', equilibrio: 'en equilibrio' }[r.acuifero.regimen]],
         ['Pozo de la finca', r.acuifero.Q > 0 ? `${fmt(p.Qpozo, 1)} L/s a ${fmt(p.distanciaPozo, 0)} m del río: abatimiento ${fmt(r.acuifero.cono.s)} m; el agua del río ${r.acuifero.llega ? `llega en ${fmt(r.acuifero.tViaje, 1)} días` : 'no llega'}` : 'sin bombear'],
         ['Arroyo', c.desborde ? `Desborde: faltan ${fmt(p.Qcrecida - c.Qcap)} m³/s` : `Sin desborde (${fmt((p.Qcrecida / c.Qcap) * 100, 0)} % de la capacidad)`],
+        ['Represa', `${P.OPERACIONES[p.operacionPresa]}: embalse a ${fmt(r.represa.nivel)} m, central de ${fmt(r.represa.P / 1000, 1)} kW, ${R.miles(r.represa.Eent)} kWh al mes en la ciudad`],
+        ['Costo del kWh de la represa puesto en la ciudad', Number.isFinite(r.represa.costoPuesto) ? r.represa.costoPuesto : 'sin energía', 'COP/kWh'],
+        ['Huella hídrica del cultivo', `${R.miles(r.huella.hh.total)} m³/t (verde ${R.miles(r.huella.hh.verde)}, azul ${R.miles(r.huella.hh.azul)}, gris ${R.miles(r.huella.hh.gris)})`],
+        ['CO₂ de llevar la cosecha a la ciudad', r.huella.carbono.kgCO2, 'kg al año', 0],
+        ['Cosecha perdida por inundación', 100 * r.huella.perdida, '%', 1],
       ],
       actual: instantanea('Al exportar'),
       registro,
       ciclo: {
         automatico: p.controlBomba === 'automatico', alcanza: r.alcanza,
         Dtanque: p.Dtanque, hA: p.nivelArranque, hP: p.nivelParada, Qb: lps(p.Qbombeo), Qs: lps(p.Qdemanda),
-        cotaRio: p.cotaRio, cotaTanque: p.cotaTanque, hf: r.hfBombeo, eficiencia: p.eficiencia,
+        cotaRio: cotaEf(), cotaTanque: p.cotaTanque, hf: r.hfBombeo, eficiencia: p.eficiencia,
         tarifa: p.tarifaKWh, cargoFijo: p.cargoFijo, At: r.At, dV: ci.dV,
         tEnc: ci.tLlenado, tApag: ci.tVaciado, ciclo: ci.ciclo, horasDia: r.horasDia, arranquesHora: ci.arranquesHora,
         nivelMedio: r.nivelMedio, Hmedia: r.Hmedia, Vmes: r.Vmes, m: r.costo.m, energia: r.costo.energia, costo: r.costo.costo,
@@ -2370,6 +2875,10 @@ async function exportarExcel(boton) {
       },
       revision: r.revisionTotal.map((x) => ({ area: x.area, texto: textoPlano(x.texto), nivel: x.nivel, detalle: textoPlano(x.detalle) })),
       cantidades: r.cantidades.filas,
+      represa: libroRepresa(p, r),
+      ano: libroAno(p, r),
+      huella: libroHuella(p, r),
+      cultivos: libroCultivos(p, r),
       perfil: {
         puntos: cal.puntos.map((x) => ({ ...x, zonaNombre: R.ZONAS[x.zona].nombre.replace('Zona ', '') })),
         marcas: [
@@ -2381,7 +2890,7 @@ async function exportarExcel(boton) {
           { km: 35, texto: 'Empieza la zona baja' },
           { km: R.KM_DESEMBOCADURA, texto: 'Desembocadura en el mar' },
         ],
-        nota: `Calidad del agua cada 0.5 km del nacimiento (km 0) a la desembocadura (km 50), con el río en la cota ${fmt(p.cotaRio)} m (${fmt(r.rio.boc.Q)} m³/s en la bocatoma) y el vertimiento del momento de exportar.`,
+        nota: `Calidad del agua cada 0.5 km del nacimiento (km 0) a la desembocadura (km 50), con el río en la cota ${fmt(cotaEf())} m (${fmt(r.rio.boc.Q)} m³/s en la bocatoma) y el vertimiento del momento de exportar.`,
       },
     });
     const nombre = nombreArchivo(ahora);
@@ -2409,6 +2918,14 @@ function avanzarTanque(segundos) {
   sim.nivel = st.nivel;
   sim.bomba = st.bomba;
   sim.arranques += st.arranques;
+  // Embalse: dh/dt = (Q_entra − Q_sale)/A con el caudal del último cálculo
+  const rep = r.represa;
+  if (rep.pendienteNivel !== 0) {
+    const h0 = sim.nivelEmbalse;
+    let h1 = h0 + rep.pendienteNivel * segundos;
+    if (h0 >= rep.hMin - 1e-9 && h1 < rep.hMin) h1 = rep.hMin;     // en el mínimo suelta solo lo que entra
+    sim.nivelEmbalse = limitar(h1, 0, rep.hMax);
+  }
 }
 
 /** Avanza el tiempo simulado; corta el paso en cada marca del registro para tomar la muestra exacta. */
@@ -2438,7 +2955,7 @@ function pintarEstados() {
   let tb0 = r.bomba
     ? `Bomba encendida: ${fmt(p.Qbombeo)} L/s${p.controlBomba === 'automatico' ? ` (se apaga a ${fmt(p.nivelParada)} m)` : ''}`
     : `Bomba apagada (arranca a ${fmt(p.nivelArranque)} m)`;
-  if (!r.capta) tb0 = `Bomba detenida: el río (cota ${fmt(p.cotaRio)} m) no alcanza la rejilla`;
+  if (!r.capta) tb0 = `Bomba detenida: el río (cota ${fmt(cotaEf())} m) no alcanza la rejilla`;
   if (bom) {
     const sp = bom.querySelector('.texto');
     if (sp.textContent !== tb0) sp.textContent = tb0;
@@ -2451,7 +2968,9 @@ function pintarEstados() {
     if (cal.bocatoma.CF > p.cfMax) [tr, nr] = [`Río contaminado: ${R.miles(cal.bocatoma.CF)} coliformes/100 mL en la bocatoma`, 'alerta'];
     else if (cal.odMin.od < p.odMin) [tr, nr] = [`Río sin oxígeno suficiente: ${fmt(cal.odMin.od, 1)} mg/L en el km ${fmt(cal.odMin.km, 1)}`, 'alerta'];
     else if (r.rio.sed.Cpasa > 500) [tr, nr] = [`Río turbio: ${R.miles(p.sedimento)} mg/L de sedimento`, 'aviso'];
-    if (!r.capta) [tr, nr] = [`Río bajo: cota ${fmt(p.cotaRio)} m, la bocatoma no capta`, 'alerta'];
+    if (!r.capta) [tr, nr] = [`Río bajo: cota ${fmt(cotaEf())} m, la bocatoma no capta`, 'alerta'];
+    else if (r.huella.loteBaja.profRio > 0) [tr, nr] = [`Creciente: el río se sale a la vega con ${fmt(r.huella.loteBaja.profRio)} m de agua sobre el cultivo`, 'alerta'];
+    else if (Math.abs(r.represa.dQ) > 0.005 && nr === 'ok') tr = `Río: ${fmt(r.rio.boc.Q)} m³/s en la bocatoma (la represa ${r.represa.dQ > 0 ? 'suelta' : 'guarda'} ${fmt(Math.abs(r.represa.dQ))} m³/s)`;
     const sp = rio.querySelector('.texto');
     if (sp.textContent !== tr) sp.textContent = tr;
     rio.dataset.nivel = nr;
@@ -2459,7 +2978,7 @@ function pintarEstados() {
   const c = r.canal;
   const uso = (p.Qcrecida / c.Qcap) * 100;
   const [tb, nb] = c.desborde
-    ? [`El arroyo se desborda: faltan ${fmt(p.Qcrecida - c.Qcap)} m³/s de capacidad`, 'alerta']
+    ? [`El arroyo se desborda: faltan ${fmt(p.Qcrecida - c.Qcap)} m³/s de capacidad${r.huella.loteBaja.profArroyo > 0 ? ' y el agua cubre el cultivo' : ''}`, 'alerta']
     : [`Arroyo: el canal va al ${fmt(uso, 0)} % de su capacidad`, uso > 85 ? 'aviso' : 'ok'];
   for (const [el, t, n] of [[acu, ta, na], [arr, tb, nb]]) {
     const span = el.querySelector('.texto');
@@ -2470,7 +2989,7 @@ function pintarEstados() {
   const alertas = { vivienda: r.estado !== 'normal' || r.casa.cerrada, tanque: r.vacio, arroyo: c.desborde,
     rio: hayAlerta(r.rio.checks), captacion: !r.capta,
     bombas: hayAlerta(r.bombas.checksA) || hayAlerta(r.bombas.checksR), riego: hayAlerta(r.riego.checks),
-    acuifero: hayAlerta(r.acuifero.checks),
+    acuifero: hayAlerta(r.acuifero.checks), represa: hayAlerta(r.represa.checks), huella: hayAlerta(r.huella.checks),
     red: r.checks.some((x) => x.nivel === 'alerta' && /Red|Acometida/.test(x.texto)),
     tuberias: r.checks.some((x) => x.nivel === 'alerta' && /Aducción|Conducción/.test(x.texto)) };
   for (const t of TABS) {
@@ -2549,6 +3068,7 @@ function controlesTiempo() {
   document.getElementById('btnReiniciar').addEventListener('click', () => {
     Object.assign(p, M.PARAMETROS_INICIALES, S.PARAMETROS_DISENO);
     sim.nivel = NIVEL_INICIAL;
+    sim.nivelEmbalse = p.nivelEmbalse;
     sim.t = HORA_INICIAL;
     sim.bomba = true;
     sim.arranques = 0;
@@ -2567,12 +3087,12 @@ function bucle(ahora) {
   if (sim.corriendo) {
     pasoSimulacion(dt * sim.factor);
     recalcular();
-    escena?.actualizar(p, r, sim.nivel);
+    actualizarEscena();
     if (ahora - ultimoPanel > 250) {
       ultimoPanel = ahora;
       pintarEstados();
       pintarReloj();
-      const dinamicas = ['tanque', 'captacion', 'vivienda', 'tuberias', 'red', 'riego'];
+      const dinamicas = ['tanque', 'captacion', 'vivienda', 'tuberias', 'red', 'riego', 'represa'];
       if (tabActiva === 'datos') {
         const conGrafica = ahora - ultimaGrafica > 1000;
         if (conGrafica) ultimaGrafica = ahora;
@@ -2590,7 +3110,7 @@ function bucle(ahora) {
           if (datos.extra && graficas[`${tabActiva}-extra`]) datos.extra.grafica(graficas[`${tabActiva}-extra`]);
         }
       }
-      if (tabActiva === 'tanque') sincronizarControles();
+      if (tabActiva === 'tanque' || tabActiva === 'represa') sincronizarControles();
     }
   }
   requestAnimationFrame(bucle);
@@ -2632,7 +3152,7 @@ function iniciar() {
   sincronizarControles();
   mostrarTab('captacion');
   pintarPanel();
-  escena?.actualizar(p, r, sim.nivel);
+  actualizarEscena();
   if (location.hash === '#depurar') window.__sim = { escena, p, sim, cambio };
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => pintarTab(tabActiva));
   requestAnimationFrame(bucle);

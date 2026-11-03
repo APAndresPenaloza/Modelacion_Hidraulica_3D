@@ -47,7 +47,15 @@ export const LLUVIAS = {
   normal: { nombre: 'Condición normal', cota: 2.5, sedimento: 150 },
   lluvias: { nombre: 'Temporada de lluvias', cota: 2.9, sedimento: 800 },
   aguacero: { nombre: 'Aguacero fuerte (creciente)', cota: 3.3, sedimento: 3000 },
+  inundacion: { nombre: 'Creciente extraordinaria (inundación)', cota: 3.7, sedimento: 5000 },
 };
+
+
+/** Cota de la lámina en la bocatoma para un caudal (curva de descarga inversa). */
+export function cotaDeCaudal(Q, cauce = CAUCE) {
+  if (Q <= 0) return cauce.fondo;
+  return cauce.fondo + M.tiranteNormal(Q, cauce.ancho, cauce.pendiente, cauce.n, 0);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 2. ZONAS DE LA CUENCA (ALTA, MEDIA Y BAJA)
@@ -130,11 +138,15 @@ export function reaireacion(u, H) {
   return Math.min(K20.kaMax, (3.93 * Math.sqrt(u)) / H ** 1.5);
 }
 
-/** Hidráulica y constantes de cada zona con un caudal Qboc en la bocatoma [m³/s]. */
-export function hidraulicaZonas(Qboc) {
+/**
+ * Hidráulica y constantes de cada zona con un caudal natural Qboc en la bocatoma [m³/s].
+ * dQ: lo que la represa (zona alta) suelta de más (o guarda, si es negativo) frente al
+ * caudal que le entra; cambia el caudal de todo el río aguas abajo de la presa.
+ */
+export function hidraulicaZonas(Qboc, dQ = 0) {
   const out = {};
   for (const [id, z] of Object.entries(ZONAS)) {
-    const Q = Math.max(1e-4, z.fraccionQ * Qboc);
+    const Q = Math.max(1e-4, z.fraccionQ * Qboc + dQ);
     const y = M.tiranteNormal(Q, z.cauce.ancho, z.cauce.pendiente, z.cauce.n, 0);
     const u = Q / (z.cauce.ancho * y);
     const T = z.Tagua;
@@ -171,11 +183,11 @@ export function puntoCritico(L0, D0, kd, ka) {
  * sigue la ecuación de Streeter-Phelps:
  *   L = L₀·e^(−k_d·t),  N = N₀·e^(−k_b·t),  D = k_d·L₀/(k_a − k_d)·(e^(−k_d·t) − e^(−k_a·t)) + D₀·e^(−k_a·t)
  */
-export function perfilCalidad(p, Qboc) {
+export function perfilCalidad(p, Qboc, dQ = 0) {
   const tipo = VERTIMIENTOS[p.vertTipo] ?? VERTIMIENTOS.ninguno;
   const Qv = tipo === VERTIMIENTOS.ninguno ? 0 : M.lpsAm3s(Math.max(0, p.Qvert));
   const kmV = KM_VERTIMIENTO[p.vertZona] ?? KM_VERTIMIENTO.media;
-  const hid = hidraulicaZonas(Qboc);
+  const hid = hidraulicaZonas(Qboc, dQ);
   let zona = 'alta';
   let h = hid.alta;
   let Q = h.Q;
@@ -361,8 +373,9 @@ export function revisar(lista, texto, cumple, detalle, nivelFalla = 'alerta') {
  * El acuífero aluvial de la zona baja se recarga con el río entre el km 35 y la
  * desembocadura: se toma la peor calidad de ese tramo (caso conservador).
  */
-export function aguaRecarga(puntos) {
-  const tramo = puntos.filter((x) => x.km >= ZONAS.baja.km[0] - 1e-9);
+export function aguaRecarga(puntos, zona = 'baja') {
+  const [k0, k1] = (ZONAS[zona] ?? ZONAS.baja).km;
+  const tramo = puntos.filter((x) => x.km >= k0 - 1e-9 && x.km <= k1 + 1e-9);
   return {
     DBO: Math.max(...tramo.map((x) => x.DBO)),
     CF: Math.max(...tramo.map((x) => x.CF)),
@@ -371,9 +384,11 @@ export function aguaRecarga(puntos) {
 }
 
 export function calcularRio(p, sed = null) {
+  // p.cotaRio ya incluye el efecto de la represa; dQ es lo que ella suelta de más (o guarda)
+  const dQ = p.dQrepresa ?? 0;
   const boc = caudalRio(p.cotaRio);
   const capta = captaAgua(p.cotaRio);
-  const calidad = perfilCalidad(p, boc.Q);
+  const calidad = perfilCalidad(p, Math.max(0, boc.Q - dQ), dQ);
   const recarga = aguaRecarga(calidad.puntos);
   const acu = acuifero(p, recarga);
   const lamina = p.cotaRio - REJILLA.fondo;

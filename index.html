@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Simulador Hídrico 3D</title>
-  <meta name="description" content="Simulador interactivo 3D del abastecimiento de agua y de un arroyo canalizado en Santa Marta: la cuenca del río con sus vertimientos, bombas, riego por zonas, acuífero y pozo, tuberías, tanque, presión en la vivienda y capacidad del canal en tiempo real.">
+  <meta name="description" content="Simulador interactivo 3D del abastecimiento de agua y de un arroyo canalizado en Santa Marta: la cuenca del río con su represa y central, vertimientos, bombas, riego y huella hídrica por zonas, acuífero y pozo, tuberías, tanque, presión en la vivienda, capacidad del canal e inundaciones en tiempo real.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3C16 3 6 14.5 6 20.5a10 10 0 0 0 20 0C26 14.5 16 3 16 3z' fill='%231C86B8'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -54,10 +54,11 @@
 
   <main class="layout">
     <section class="escena" id="escena" aria-label="Vista 3D del sistema hídrico">
-      <p class="ayuda" id="ayuda">Arrastra para girar la vista y usa la rueda o dos dedos para acercar. Toca un componente para ver sus controles; con los botones de arriba vas a la cuenca, al cultivo o al acuífero.</p>
+      <p class="ayuda" id="ayuda">Arrastra para girar la vista y usa la rueda o dos dedos para acercar. Toca un componente para ver sus controles; con los botones de arriba vas a la cuenca, a la represa, al cultivo o al acuífero.</p>
       <div class="vistas" id="vistas" role="group" aria-label="Vista de la escena">
         <button type="button" data-vista="general" aria-pressed="true" title="El acueducto, la ciudad y el arroyo">Ciudad</button>
         <button type="button" data-vista="cuenca" aria-pressed="false" title="El río del nacimiento al mar, con sus tres zonas">Cuenca</button>
+        <button type="button" data-vista="represa" aria-pressed="false" title="La presa, el embalse, la central, la línea eléctrica y la tubería a la ciudad">Represa</button>
         <button type="button" data-vista="riego" aria-pressed="false" title="El cultivo de la zona elegida, su bomba y su tubería">Cultivo</button>
         <button type="button" data-vista="acuifero" aria-pressed="false" title="Corte del terreno: el agua subterránea y el pozo">Acuífero</button>
       </div>

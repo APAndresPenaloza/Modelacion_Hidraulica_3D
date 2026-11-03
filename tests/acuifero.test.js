@@ -88,3 +88,21 @@ test('Curva de llegada: la mitad del agua del río llega en el tiempo de viaje',
   assert.ok(A.curvaLlegada(60, 30) < 0.1 && A.curvaLlegada(60, 120) > 0.9);
   assert.equal(A.curvaLlegada(Infinity, 100), 0);
 });
+
+test('Acuífero en las tres zonas: en la montaña el río gana agua; en el piedemonte la pierde', () => {
+  const zona = (z) => {
+    const Z = A.ZONAS_ACUIFERO[z];
+    return calcular({ zonaAcuifero: z, materialAcuifero: Z.material, espesorAcuifero: Z.espesor, sueloAcuifero: Z.suelo, tipoAcuifero: Z.tipo });
+  };
+  const alta = zona('alta');
+  const media = zona('media');
+  const baja = zona('baja');
+  cerca(alta.terreno, 1.0 + 2.5, 1e-12);                  // banca de 2.5 m sobre el lecho
+  assert.equal(alta.regimen, 'ganador');                  // aluvión delgado de grava: el agua sale al río
+  assert.equal(media.regimen, 'perdedor');                // abanico aluvial: el río recarga el acuífero
+  assert.equal(baja.zona, 'baja');
+  assert.ok(media.K > baja.K && alta.K > media.K);
+  // En las zonas alta y media el río es el de esa zona (su profundidad sobre el lecho)
+  const r = S.calcular({ ...M.PARAMETROS_INICIALES, ...S.PARAMETROS_DISENO, zonaAcuifero: 'media' }, { nivel: 4.4, bomba: true, t: 6 * 3600 });
+  cerca(r.acuifero.hRio, 1.0 + r.rio.calidad.hid.media.y, 1e-12);
+});

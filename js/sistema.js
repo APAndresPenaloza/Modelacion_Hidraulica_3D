@@ -2,8 +2,9 @@
  * sistema.js — Une el modelo base (modelo.js) con los criterios de diseño (diseno.js):
  * río → bocatoma → succión → bomba → ADUCCIÓN → tanque → CONDUCCIÓN → RED DE DISTRIBUCIÓN
  * → acometida → medidor → llave de paso → grifo de la vivienda de análisis.
- * Además: el río y su cuenca (rio.js), las estaciones de bombeo (bombas.js) y el riego
- * de la zona rural (riego.js).
+ * Además: el río y su cuenca (rio.js), la represa de la zona alta (represa.js), las
+ * estaciones de bombeo (bombas.js), el riego de la zona rural (riego.js), el agua
+ * subterránea (acuifero.js) y la huella de los cultivos (huella.js).
  * Funciones puras: reciben los parámetros y el estado (nivel, bomba, hora) y devuelven
  * todos los resultados.
  */
@@ -13,6 +14,8 @@ import * as R from './rio.js';
 import * as B from './bombas.js';
 import * as G from './riego.js';
 import * as A from './acuifero.js';
+import * as P from './represa.js';
+import * as H from './huella.js';
 
 export const PARAMETROS_DISENO = Object.freeze({
   // Control de la bomba por niveles
@@ -56,7 +59,8 @@ export const PARAMETROS_DISENO = Object.freeze({
   lluvia: 'normal',               // escenario que fija la cota del río y el sedimento
   sedimento: 150,                 // mg/L de sólidos en suspensión
   vertTipo: 'tratada', vertZona: 'media', Qvert: 20,   // L/s
-  // Acuífero de la zona baja y pozo de una finca
+  // Acuífero (zona del corte) y pozo de una finca
+  zonaAcuifero: 'baja',
   sueloAcuifero: 'arena', tipoAcuifero: 'semiconfinado', profFreatico: 2,   // m
   materialAcuifero: 'arena', espesorAcuifero: 20, distanciaPozo: 40, Qpozo: 5,   // m, m, L/s
   odMin: 4, cfMax: 2000,          // mg/L y NMP/100 mL (referencias de calidad)
@@ -68,6 +72,15 @@ export const PARAMETROS_DISENO = Object.freeze({
   zonaRiego: 'baja', cultivo: 'banano', metodoRiego: 'microaspersion',
   areaRiego: 10, horasRiego: 12, epoca: 'seca',          // ha y h/día
   matRiego: 'pvc', claseRiego: 'RDE 32.5', dnRiego: '6"', Lriego: 600,
+  // Represa de la zona alta: embalse, central y transporte a la ciudad
+  alturaPresa: 40, nivelEmbalse: 36,                     // m (nivel inicial del embalse sobre el lecho)
+  operacionPresa: 'filo', Qpresa: 2, QturbMax: 2,        // m³/s
+  etaTurbina: 0.85, caudalAmbiental: 25,                 // eficiencia; % del caudal medio que entra
+  tensionLinea: 34.5,                                    // kV
+  costoGeneracion: 50, costoLinea: 15, costoGravedad: 30,   // COP/kWh, COP/kWh, COP/m³ (operación)
+  // Huella de los cultivos e inundación del lote
+  dosisN: 100, capacidadCamion: 10, impuestoCarbono: 29070.49,   // %, t, COP/t CO₂e
+  diasInundacion: 3,                                     // días que dura la creciente del río sobre el lote
 });
 
 const TUBOS = ['Succion', 'Aduccion', 'Conduccion', 'Principal', 'Ramal', 'Acometida', 'Riego'];
@@ -108,6 +121,14 @@ function revisar(lista, texto, cumple, detalle, nivelFalla = 'alerta') {
  * estado: { nivel [m], bomba (encendida), t [s desde el día 1 a las 00:00] }
  */
 export function calcular(p, estado) {
+  // Represa de la zona alta: si suelta más (o menos) de lo que le entra, cambia el caudal
+  // de todo el río aguas abajo y con él la cota en la bocatoma. El control de la cota es
+  // el río natural (sin represa).
+  const Qnat = R.caudalRio(p.cotaRio).Q;
+  const represa = P.calcularRepresa(p, Qnat, estado.nivelEmbalse ?? p.nivelEmbalse);
+  p = Math.abs(represa.dQ) > 1e-9
+    ? { ...p, cotaRioNatural: p.cotaRio, cotaRio: R.cotaDeCaudal(Math.max(1e-4, Qnat + represa.dQ)), dQrepresa: represa.dQ }
+    : { ...p, cotaRioNatural: p.cotaRio, dQrepresa: 0 };
   const e = sincronizarTubos(p);
   const { nivel } = estado;
   const hora = ((estado.t / 3600) % 24 + 24) % 24;
@@ -253,6 +274,16 @@ export function calcular(p, estado) {
   // Agua subterránea: nivel freático frente al río, pozo y calidad
   const acuifero = A.calcularAcuifero(p, rio);
 
+  // Represa: costos de llevar el agua a la ciudad y un año de operación
+  represa.agua = P.costosAgua(represa, { Vmes, Ebombeo: costo.energia, costoRed: costo.costo, costoGravedad: p.costoGravedad });
+  const anoRepresa = P.simularAno(p, represa.nivel);
+  // Huella hídrica y de carbono del cultivo; la inundación del lote (río y arroyo)
+  const canal = dis.canal;
+  const huella = H.calcularHuella(p, {
+    cotaRio: p.cotaRio,
+    excesoArroyo: canal && canal.desborde ? p.Qcrecida - canal.Qcap : 0,
+  });
+
   // Toda la revisión del diseño, por componente (para el Excel y el conteo)
   const revisionTotal = [
     ...checks.map((c) => ({ ...c, area: 'Acueducto' })),
@@ -260,6 +291,8 @@ export function calcular(p, estado) {
     ...bombas.checksA.map((c) => ({ ...c, area: 'Bombas' })),
     ...bombas.checksR.map((c) => ({ ...c, area: 'Bombas' })),
     ...riego.checks.map((c) => ({ ...c, area: 'Riego' })),
+    ...represa.checks.map((c) => ({ ...c, area: 'Represa' })),
+    ...huella.checks.map((c) => ({ ...c, area: 'Huella' })),
     ...acuifero.checks.map((c) => ({ ...c, area: 'Acuífero' })),
   ];
 
@@ -270,7 +303,8 @@ export function calcular(p, estado) {
     succion, aduccion, alturaBombeo: Hb, potencia, Vmes, costo, horasDia, ciclo, golpe,
     hfBombeo, Hmedia: mes.Hmedia, nivelMedio: mes.nivelMedio, potenciaMedia: mes.potencia, alcanza: mes.alcanza,
     potenciaElectrica: mes.potenciaElectrica, etaMotor: bombaA.motor.eta, capta: mes.capta,
-    rio, riego, bombas, acuifero, revisionTotal,
+    rio, riego, bombas, acuifero, represa, anoRepresa, huella, revisionTotal,
+    cotaRioNatural: p.cotaRioNatural, cotaRioEf: p.cotaRio,
     distribucion: conduccion, conduccion, Hentrada, Hestatica,
     red, redDiseno, casa, grifo, Hnodo,
     Hcasa, presionCasa: M.mcaAkPa(Math.max(0, Hcasa)), vGrifo, qGrifo,
