@@ -16,6 +16,7 @@
  */
 import * as M from './modelo.js';
 import * as R from './rio.js';
+import * as L from './lluvia.js';
 
 /** Sitio de la presa y constantes del embalse, la central y la línea. */
 export const PRESA = Object.freeze({
@@ -44,16 +45,10 @@ export const OPERACIONES = {
 export const TENSIONES = [13.2, 34.5];
 
 /**
- * Caudal medio de cada mes frente al caudal medio del año: régimen bimodal del Caribe,
- * con la época seca de diciembre a abril y las lluvias en mayo y de septiembre a
- * noviembre (valores de referencia; promedian 1).
+ * Caudal medio de cada mes frente al caudal medio del año (régimen bimodal del Caribe):
+ * está en lluvia.js, que lo cambia con el clima del año (El Niño o La Niña).
  */
-export const MESES = [
-  { nombre: 'Ene', dias: 31, f: 0.5 }, { nombre: 'Feb', dias: 28, f: 0.4 }, { nombre: 'Mar', dias: 31, f: 0.4 },
-  { nombre: 'Abr', dias: 30, f: 0.6 }, { nombre: 'May', dias: 31, f: 1.1 }, { nombre: 'Jun', dias: 30, f: 1.05 },
-  { nombre: 'Jul', dias: 31, f: 0.8 }, { nombre: 'Ago', dias: 31, f: 0.95 }, { nombre: 'Sep', dias: 30, f: 1.35 },
-  { nombre: 'Oct', dias: 31, f: 1.9 }, { nombre: 'Nov', dias: 30, f: 1.8 }, { nombre: 'Dic', dias: 31, f: 1.15 },
-];
+export const { MESES } = L;
 
 // ── Embalse ────────────────────────────────────────────────────────────────
 export const volumen = (h, a = PRESA.aValle) => a * Math.max(0, h) ** 2;
@@ -174,7 +169,8 @@ export function costosAgua(rep, { Vmes, Ebombeo, costoRed, costoGravedad }) {
 
 /**
  * Un año de operación, mes a mes, desde el nivel h0 y con la operación elegida.
- * Entra el caudal medio de cada mes; el embalse guarda o suelta según la operación.
+ * Entra el caudal medio de cada mes con el clima del año (p.climaAno: la lluvia de cada
+ * mes, lluvia.js); el embalse guarda o suelta según la operación.
  */
 export function simularAno(p, h0) {
   const Hp = p.alturaPresa;
@@ -183,14 +179,18 @@ export function simularAno(p, h0) {
   const Qmedio = caudalMedioEntrada();
   const Qamb = (p.caudalAmbiental / 100) * Qmedio;
   const Qboc0 = R.caudalRio(R.LLUVIAS.normal.cota).Q;
+  const clima = p.climaAno ?? 'normal';
+  // Caudal de cada mes frente al medio de un año normal (en un año normal es MESES[k].f)
+  const fMes = (k) => (clima === 'normal' ? MESES[k].f : L.caudalMes(k, clima) / Qboc0);
   let V = volumen(Math.min(hMax, Math.max(0, h0)));
   const Vmax = volumen(hMax);
   const Vmin = volumen(hMin);
   const meses = [];
   let Eano = 0;
-  for (const mes of MESES) {
+  for (const [k, mes] of MESES.entries()) {
     const dt = mes.dias * 86400;
-    const Qin = Qmedio * mes.f;
+    const f = fMes(k);
+    const Qin = Qmedio * f;
     const h = nivelDeVolumen(V);
     let Qout = caudalSalida(p.operacionPresa, { Qin, Qfijo: p.Qpresa, Qamb, h, hMin, hMax });
     // Que el embalse no se pase del máximo ni baje del mínimo dentro del mes
@@ -205,9 +205,9 @@ export function simularAno(p, h0) {
     const dQ = Qout - Qin;
     meses.push({
       mes: mes.nombre, Qin, Qout, Qturb, vertido: Qout - Qturb, h: nivelDeVolumen(Vf), V: Vf, E,
-      bocNatural: Qboc0 * mes.f, bocConRepresa: Math.max(0, Qboc0 * mes.f + dQ),
+      bocNatural: Qboc0 * f, bocConRepresa: Math.max(0, Qboc0 * f + dQ),
     });
     V = Vf;
   }
-  return { meses, Eano, Qmedio, Qamb };
+  return { meses, Eano, Qmedio, Qamb, clima };
 }

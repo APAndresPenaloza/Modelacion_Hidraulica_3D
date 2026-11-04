@@ -4,7 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inflateRawSync } from 'node:zlib';
 import { crc32, deflate, nombreColumna, crearXlsx } from '../js/excel.js';
-import { Registro, libroRepresa, libroAno, libroHuella, libroCultivos, construirHojas, crearLibro, relojSimulado, unirEsquemas } from '../js/datos.js';
+import { Registro, libroRepresa, libroAno, libroHuella, libroCultivos, libroLluvia, libroLluviaMeses, construirHojas, crearLibro, relojSimulado, unirEsquemas } from '../js/datos.js';
+import * as L from '../js/lluvia.js';
 import * as M from '../js/modelo.js';
 import * as S from '../js/sistema.js';
 
@@ -121,10 +122,12 @@ test('Libro de la simulación: hojas, escenarios y fórmulas del ciclo', () => {
     ano: libroAno(p, r),
     huella: libroHuella(p, r),
     cultivos: libroCultivos(p, r),
+    lluvia: libroLluvia(p, r),
+    lluviaMeses: libroLluviaMeses(p, r),
   };
   const hojas = construirHojas(datos);
   assert.deepEqual(hojas.map((h) => h.nombre), ['Resumen', 'Parámetros y resultados', 'Serie de tiempo', 'Arranques y paradas', 'Ciclo y costo', 'Revisión del diseño',
-    'Cantidades de obra', 'Perfil del río', 'Represa y energía', 'Embalse mes a mes', 'Huella hídrica', 'Huella por cultivo']);
+    'Cantidades de obra', 'Perfil del río', 'Represa y energía', 'Embalse mes a mes', 'Huella hídrica', 'Huella por cultivo', 'Lluvia y desastres', 'Lluvia mes a mes']);
   // Una columna por escenario guardado más el estado al exportar
   assert.deepEqual(hojas[1].filas[3].map((c) => c?.v), ['Variable', 'Unidad', 'Base', 'Al exportar']);
   // La fila que solo existe al exportar queda vacía en el escenario guardado
@@ -147,12 +150,12 @@ test('Libro de la simulación: hojas, escenarios y fórmulas del ciclo', () => {
   // La revisión (acueducto, río, bombas, riego, represa, huella y acuífero) y las cantidades pasan completas
   assert.equal(hojas[5].filas.length, 4 + r.revisionTotal.length);
   assert.ok(r.revisionTotal.length > r.checks.length);
-  assert.deepEqual([...new Set(hojas[5].filas.slice(4).map((f) => f[0]))], ['Acueducto', 'Río', 'Bombas', 'Riego', 'Represa', 'Huella', 'Acuífero']);
+  assert.deepEqual([...new Set(hojas[5].filas.slice(4).map((f) => f[0]))], ['Acueducto', 'Río', 'Bombas', 'Riego', 'Represa', 'Huella', 'Acuífero', 'Lluvia']);
   assert.equal(hojas[6].filas.length, 4 + r.cantidades.filas.length);
   // Perfil del río: una fila cada 0.5 km del km 0 al 50, con la bocatoma marcada
   assert.equal(hojas[7].filas.length, 4 + 101);
   assert.equal(hojas[7].filas[4 + 88][8].v, 'Bocatoma');
-  // El libro completo se puede descomprimir y trae las doce hojas
+  // El libro completo se puede descomprimir y trae las catorce hojas
   const zip = leerZip(crearLibro(datos));
   assert.ok(zip['xl/worksheets/sheet5.xml'].includes('<f>PI()*B6^2/4</f>'));
   assert.ok(zip['xl/worksheets/sheet7.xml'].includes('Tubería principal'));
@@ -161,9 +164,11 @@ test('Libro de la simulación: hojas, escenarios y fórmulas del ciclo', () => {
   assert.ok(zip['xl/worksheets/sheet10.xml'].includes('<f>SUM(H5:H16)</f>'));
   assert.ok(zip['xl/worksheets/sheet11.xml'].includes('<f>ROUNDUP(B27/B34,0)</f>'));
   assert.ok(zip['xl/worksheets/sheet12.xml'].includes('Café'));
+  assert.ok(zip['xl/worksheets/sheet13.xml'].includes('<f>B9*B8+B37*(B10+B38)</f>'));
+  assert.ok(zip['xl/worksheets/sheet14.xml'].includes('<f>COUNTIF(F5:F16,&quot;Sí&quot;)</f>') || zip['xl/worksheets/sheet14.xml'].includes('<f>COUNTIF(F5:F16,"Sí")</f>'));
   // En el Resumen, la descripción de cada hoja ocupa B:C y se ajusta (cabe a lo ancho al imprimir)
   const resumen = zip['xl/worksheets/sheet1.xml'];
-  assert.ok(resumen.includes('<mergeCells count="11">'));
+  assert.ok(resumen.includes('<mergeCells count="13">'));
   assert.ok(resumen.indexOf('</sheetData>') < resumen.indexOf('<mergeCells') && resumen.indexOf('<mergeCells') < resumen.indexOf('<pageMargins'));
 });
 
@@ -219,3 +224,58 @@ test('Hojas de la represa y de la huella: las fórmulas dan lo mismo que el simu
     assert.equal(hojas[11].filas.filter((f) => typeof f[0] === 'string' && f.length === 10).length, 11 + 3);
   }
 });
+
+const cerca = (a, b, tol = 1e-6) => assert.ok(Math.abs(a - b) <= tol, `esperado ${b}, obtenido ${a} (tol ${tol})`);
+
+/**
+ * Evalúa las fórmulas de la columna B de una hoja (las que usa la hoja de la lluvia: IF, SQRT,
+ * PI, LN, MIN, MAX, ^ y referencias a la columna B) en el orden de las filas.
+ */
+function evaluarColumnaB(hoja) {
+  const c = {};
+  hoja.filas.forEach((f, k) => {
+    const celda = f[1];
+    if (celda && typeof celda === 'object' && celda.f) {
+      const js = celda.f
+        .replace(/B(\d+)/g, 'c[$1]').replace(/\^/g, '**').replace(/IF\(/g, 'iff(').replace(/SQRT\(/g, 'Math.sqrt(')
+        .replace(/PI\(\)/g, 'Math.PI').replace(/LN\(/g, 'Math.log(').replace(/MIN\(/g, 'Math.min(').replace(/MAX\(/g, 'Math.max(');
+      // eslint-disable-next-line no-new-func
+      c[k + 1] = new Function('c', 'iff', `return ${js};`)(c, (a, b, d) => (a ? b : d));
+    } else c[k + 1] = celda && typeof celda === 'object' ? celda.v : celda;
+  });
+  return c;
+}
+
+test('Hoja de la lluvia: las fórmulas de Excel dan lo mismo que el simulador', () => {
+  const casos = ['normal', 'aguacero', 'inundacion', 'avenida', 'nino', 'nina'].map((id) => ({ lluvia: id, ...L.parametrosEscenario(id) }));
+  casos.push({ tormentaT: 25, tormentaD: 15, tormentaZona: 'baja', Qcrecida: L.crecidaParaCanal(L.tormenta({ T: 25, D: 15, zona: 'baja' })) });
+  casos.push({ tormentaT: 50, tormentaD: 120, tormentaZona: 'media', lluviaM: 90 });
+  for (const cambios of casos) {
+    const p = { ...M.PARAMETROS_INICIALES, ...S.PARAMETROS_DISENO, ...cambios };
+    const r = S.calcular(p, { nivel: 4.4, bomba: true, t: 6 * 3600 });
+    const hojas = construirHojas({
+      meta: { fecha: 'hoy', reloj: 'Día 1, 06:00' }, resumen: [], actual: { nombre: 'Al exportar', momento: '', filas: [] }, registro: new Registro(900),
+      ciclo: { automatico: false, alcanza: true }, lluvia: libroLluvia(p, r), lluviaMeses: libroLluviaMeses(p, r),
+    });
+    const hoja = hojas[12];
+    const c = evaluarColumnaB(hoja);
+    // Cada fórmula da su valor guardado
+    hoja.filas.forEach((f, k) => {
+      const celda = f[1];
+      if (celda?.f) {
+        if (typeof celda.v === 'number') cerca(c[k + 1], celda.v, 1e-9 * Math.max(1, Math.abs(celda.v)));
+        else assert.equal(c[k + 1], celda.v);
+      }
+    });
+    const l = r.lluvia;
+    cerca(c[39], l.Qboc, 1e-9);                               // caudal del río
+    cerca(c[43], l.arroyo.Q, 1e-9);                           // crecida del arroyo
+    cerca(c[49], 100 * l.desl.r, 1e-9);                       // lluvia frente al umbral
+    cerca(c[57], l.avenida.llueve ? l.avenida.Qlodo : 0, 1e-9);
+    cerca(c[58], l.avenida.tLlegada, 1e-12);
+    // El año mes a mes: doce meses y la fila del año
+    assert.equal(hojas[13].filas.length, 4 + 12 + 1 + 2);
+    cerca(hojas[13].filas[16][2].v, l.ano.lluviaCuenca, 1e-9);
+  }
+});
+

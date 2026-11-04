@@ -21,18 +21,20 @@ export function paleta() {
   };
 }
 
-export function crearGrafica(canvas, { xTitulo, yTitulo, formatoX, formatoY }) {
+export function crearGrafica(canvas, { xTitulo, yTitulo, formatoX, formatoY, marcasX = null, marcasY = null }) {
   const Chart = window.Chart;
   if (!Chart) return null;
   const c = paleta();
   Chart.defaults.font.family = '"Archivo", "Segoe UI", system-ui, sans-serif';
   Chart.defaults.font.size = 12;
-  const eje = (titulo, formato) => ({
+  // marcas: valores fijos donde van las rayas del eje (p. ej. log₁₀ de 1, 2, 5, 10… en un eje logarítmico)
+  const eje = (titulo, formato, marcas) => ({
     type: 'linear',
     title: { display: true, text: titulo, color: c.tinta2 },
-    ticks: { color: c.tinta2, callback: formato, maxTicksLimit: 7 },
+    ticks: { color: c.tinta2, callback: formato, maxTicksLimit: marcas ? 12 : 7 },
     grid: { color: c.linea },
     border: { color: c.linea },
+    ...(marcas ? { afterBuildTicks: (eje) => { eje.ticks = marcas.filter((v) => v >= eje.min - 1e-9 && v <= eje.max + 1e-9).map((value) => ({ value })); } } : {}),
   });
   return new Chart(canvas, {
     type: 'scatter',
@@ -53,7 +55,7 @@ export function crearGrafica(canvas, { xTitulo, yTitulo, formatoX, formatoY }) {
           },
         },
       },
-      scales: { x: eje(xTitulo, formatoX), y: eje(yTitulo, formatoY) },
+      scales: { x: eje(xTitulo, formatoX, marcasX), y: eje(yTitulo, formatoY, marcasY) },
     },
   });
 }

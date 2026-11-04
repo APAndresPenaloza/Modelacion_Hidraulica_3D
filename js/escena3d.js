@@ -10,7 +10,9 @@
  * tubería baja el agua por gravedad hasta el tanque. Las crecientes del río y el desborde
  * del arroyo inundan la vega donde está el cultivo de la llanura. Un corte del terreno
  * (en la llanura, el piedemonte o la montaña) muestra el acuífero, el nivel freático y el
- * pozo de una finca.
+ * pozo de una finca. La lluvia cambia el cielo y la luz: una tormenta trae nubes y gotas
+ * sobre la zona donde cae, puede marcar deslizamientos en las laderas y bajar una
+ * avenida torrencial por una quebrada de la montaña; con El Niño el paisaje se seca.
  *
  * La escena solo dibuja: todos los números vienen de sistema.js.
  */
@@ -23,6 +25,7 @@ import * as R from './rio.js';
 import * as A from './acuifero.js';
 import * as P from './represa.js';
 import * as H from './huella.js';
+import * as L from './lluvia.js';
 
 // ── Escalas y posiciones de la escena ──────────────────────────────────────
 const VS = 0.6;           // escala vertical: 1 m de cota = 0.6 unidades
@@ -763,6 +766,7 @@ export class Escena {
     this.terrenoCuenca();
     this.aguas();
     this.construirRioCuenca();
+    this.construirLluvia();
 
     this.grupos = {
       bomba: this.grupo('bombas'),
@@ -820,6 +824,8 @@ export class Escena {
     const cielo = new THREE.HemisphereLight(0xe4f2f6, 0x8c7b56, 1.35);
     this.scene.add(cielo);
     const sol = new THREE.DirectionalLight(0xfff3df, 2.4);
+    this.luzCielo = cielo;
+    this.luzSol = sol;
     sol.position.set(55, 95, 60);
     sol.castShadow = true;
     sol.shadow.mapSize.set(2048, 2048);
@@ -839,7 +845,8 @@ export class Escena {
     geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * 3), 3));
     this.geoTerreno = geo;
     this.pintarTerreno();
-    const malla = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true }));
+    this.matTerreno = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true });
+    const malla = new THREE.Mesh(geo, this.matTerreno);
     malla.receiveShadow = true;
     this.scene.add(malla);
   }
@@ -1648,6 +1655,9 @@ export class Escena {
       ['corteRoca', 'acuifero', 'Roca'],
       ['pozo', 'acuifero', 'Pozo de la finca'],
       ['corteFlujo', 'acuifero', 'Agua subterránea'],
+      ['tormenta', 'lluvia', 'Tormenta'],
+      ['deslizamiento', 'lluvia', 'Deslizamientos'],
+      ['avenida', 'lluvia', 'Avenida torrencial'],
     ];
     // Punto de la etiqueta que va sobre su posición (por defecto, el centro)
     const centros = {
@@ -1656,6 +1666,7 @@ export class Escena {
       represa: [0.5, 1], central: [0, 0.5], linea: [0.5, 1], tuberiaPresa: [0, 0.5],
       corteRio: [0.5, 1], corteNivel: [0.5, 1], pozo: [0.5, 1], corteFlujo: [0.5, 0],
       corteSuelo: [0, 1], corteArcilla: [0, 0], corteAcuifero: [0, 0.5], corteRoca: [0, 0.5],
+      tormenta: [0, 1], deslizamiento: [1, 0.5], avenida: [0.5, 1],
     };
     const secundarias = ['rio', 'aduccion', 'distribucion', 'piezo', 'red', 'bombaRiego', 'corteRoca', 'corteFlujo', 'tuberiaPresa'];
     for (const [id, tab, titulo] of defs) {
@@ -1693,6 +1704,7 @@ export class Escena {
     for (const { el } of Object.values(this.etiquetas)) {
       el.classList.toggle('activa', el.dataset.tab === tab);
     }
+    this.mostrarEtiquetasVista();
     // La cámara va sola a la parte de la escena que muestra la pestaña
     const vista = this.vistaDePestana(tab);
     this.vistaTab = vista;
@@ -1719,7 +1731,9 @@ export class Escena {
       const rect = el.getBoundingClientRect();
       v.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
       ray.setFromCamera(v, this.camara);
-      const hit = ray.intersectObjects(this.seleccionables, false)[0];
+      // Solo lo que se ve (las cicatrices y el lodo están escondidos sin tormenta)
+      const visible = (o) => { for (let q = o; q; q = q.parent) if (!q.visible) return false; return true; };
+      const hit = ray.intersectObjects(this.seleccionables, false).find((h) => visible(h.object));
       if (!hit) return;
       if (hit.object.userData.casa) { this.onCasa(hit.object.userData.casa); return; }
       let o = hit.object;
@@ -1972,6 +1986,7 @@ export class Escena {
     const textoFlujo = a.via === 'bombeo' ? `va del río al pozo: llega en ${fmt(a.tViaje, 0)} días`
       : (a.via === 'natural' ? `sale del río a ${fmt(a.vNat, 2)} m/día` : `va de la llanura al río a ${fmt(a.vNat, 2)} m/día`);
     this.etiqueta('corteFlujo', textoFlujo, a.llega && a.tViaje < A.DIAS_PROTECCION ? 'aviso' : 'ok', pc.flujo);
+    this.actualizarLluvia(p, r);
     this.mostrarEtiquetasVista();
 
     // Si cambia lo que muestra la pestaña (qué estación de bombeo o en qué zona está
@@ -2698,6 +2713,7 @@ export class Escena {
     const c = new THREE.Color();
     const cCiudad = new THREE.Color();
     const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, flatShading: true });
+    this.matCuenca = material;
     // En cuatro tramos a lo largo del valle: la cámara deja de dibujar los que no ve
     const TRAMOS = 4;
     const largo = (Z_CUENCA - Z_NACIMIENTO) / TRAMOS;
@@ -2755,6 +2771,7 @@ export class Escena {
     }
     const geoArbol = new THREE.ConeGeometry(1, 1, 6);
     const matArbol = new THREE.MeshStandardMaterial({ color: 0x3d5c35, roughness: 0.9, flatShading: true });
+    this.matArbol = matArbol;
     const aux = new THREE.Object3D();
     this.arbolesCuenca = [];
     for (let t = 0; t < TRAMOS; t++) {
@@ -2890,6 +2907,280 @@ export class Escena {
     col2.needsUpdate = true;
   }
 
+  // ── Lluvia: nubes, gotas, deslizamientos, avenida torrencial y sequía ─────
+  /** Base de las nubes sobre cada parte de la cuenca [unidades de la escena]. */
+  baseNubes(z) {
+    if (z >= Z_CUENCA) return 44;
+    const km = kmDeZ(z);
+    return km < 15 ? 104 : 80;
+  }
+
+  /** Cinta pegada al terreno a lo largo de un camino [[x, z, semiancho], …]. */
+  cintaTerreno(camino, color, alto = 0.25) {
+    const vert = [];
+    const idx = [];
+    for (let k = 0; k < camino.length; k++) {
+      const [x, z, w] = camino[k];
+      const [xs, zs] = camino[Math.min(camino.length - 1, k + 1)];
+      const [xa, za] = camino[Math.max(0, k - 1)];
+      let dx = xs - xa;
+      let dz = zs - za;
+      const n = Math.hypot(dx, dz) || 1;
+      dx /= n; dz /= n;
+      // Normal horizontal al camino
+      const nx = -dz;
+      const nz = dx;
+      for (const sgn of [-1, 1]) {
+        const px = x + sgn * w * nx;
+        const pz = z + sgn * w * nz;
+        vert.push(px, alturaEn(px, pz) + alto, pz);
+      }
+      if (k > 0) {
+        const b = 2 * k;
+        idx.push(b - 2, b - 1, b, b - 1, b + 1, b);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(vert, 3));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+      color, roughness: 0.95, flatShading: true, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    }));
+    m.receiveShadow = true;
+    return m;
+  }
+
+  construirLluvia() {
+    const g = this.grupo('lluvia');
+    this.grupoLluvia = g;
+    // Gotas: segmentos que caen; se crean alrededor de lo que mira la cámara
+    const MAX = 5000;
+    const pos = new Float32Array(MAX * 6);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setDrawRange(0, 0);
+    this.gotasLluvia = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0xf4f9fb, transparent: true, opacity: 0.72, depthWrite: false }));
+    this.gotasLluvia.frustumCulled = false;
+    this.gotasLluvia.visible = false;
+    this.scene.add(this.gotasLluvia);
+    this.lluvia3d = { MAX, n: 0, x: new Float32Array(MAX), y: new Float32Array(MAX), z: new Float32Array(MAX), suelo: new Float32Array(MAX), vivo: new Uint8Array(MAX) };
+    // Nubes (se arman según la tormenta)
+    this.nubes = new THREE.Group();
+    this.scene.add(this.nubes);
+    // Quebrada de montaña (zona alta, orilla oeste): baja de la ladera al río en el km de la quebrada
+    const zq = zDeKm(L.QUEBRADA.km);
+    const caminoQ = [];
+    for (let k = 0; k <= 40; k++) {
+      const u = k / 40;                              // 0 arriba, 1 en el río
+      const z = zq - 16 * (1 - u) ** 1.3;
+      const xr = xRioEn(z);
+      const x = xr - (semiCauce(z) + 1.2) - 44 * (1 - u);
+      caminoQ.push([x, z, 0.55 + 0.5 * u]);
+    }
+    this.quebradaAgua = this.cintaTerreno(caminoQ, 0x5f8fa6, 0.18);
+    g.add(this.quebradaAgua);
+    this.quebradaLodo = this.cintaTerreno(caminoQ.map(([x, z, w]) => [x, z, 1.6 + 1.6 * w]), 0x6a4a2c, 0.32);
+    this.quebradaLodo.visible = false;
+    g.add(this.quebradaLodo);
+    const arriba = caminoQ[6];
+    this.posQuebrada = new THREE.Vector3(arriba[0], alturaEn(arriba[0], arriba[1]) + 4, arriba[1]);
+    // Frente de la avenida: lodo y troncos que bajan por el río hasta la bocatoma
+    const frente = new THREE.Group();
+    const lodo = new THREE.Mesh(new THREE.CircleGeometry(1, 20), new THREE.MeshStandardMaterial({ color: 0x5e4127, roughness: 0.9, transparent: true, opacity: 0.92, depthWrite: false }));
+    lodo.rotation.x = -Math.PI / 2;
+    lodo.scale.set(7, 16, 1);
+    lodo.renderOrder = 4;
+    frente.add(lodo);
+    const matTronco = new THREE.MeshStandardMaterial({ color: 0x4a3423, roughness: 0.9, flatShading: true });
+    const geoTronco = new THREE.CylinderGeometry(0.28, 0.32, 1, 6);
+    let semilla = 777;
+    const azarT = () => (semilla = (semilla * 16807) % 2147483647) / 2147483647;
+    this.troncos = [];
+    for (let k = 0; k < 14; k++) {
+      const t = new THREE.Mesh(geoTronco, matTronco);
+      t.scale.y = 2.5 + 3 * azarT();
+      t.rotation.z = Math.PI / 2;
+      t.rotation.y = azarT() * Math.PI;
+      t.position.set((azarT() * 2 - 1) * 4.5, 0.35, (azarT() * 2 - 1) * 12);
+      t.userData.giro = (azarT() * 2 - 1) * 0.8;
+      frente.add(t);
+      this.troncos.push(t);
+    }
+    frente.visible = false;
+    this.frenteAvenida = frente;
+    this.scene.add(frente);
+    this.zQuebrada = zq;
+    // Deslizamientos: lenguas de tierra en las laderas del oeste (dos en cada zona)
+    this.cicatrices = { alta: [], media: [] };
+    for (const [zona, km, sgn] of [['alta', 9.5, -1], ['alta', 13.6, -1], ['media', 19, -1], ['media', 23.5, -1]]) {
+      const z = zDeKm(km);
+      const xr = xRioEn(z);
+      const hw = semiCauce(z);
+      const t = tCuenca(z);
+      const W = 38 - 12 * t;
+      const camino = [];
+      for (let k = 0; k <= 24; k++) {
+        const u = k / 24;                            // 0 arriba (cicatriz), 1 abajo (abanico de tierra)
+        const d = hw + 1.2 + (0.62 * W) * (1 - u);
+        camino.push([xr + sgn * d, z + 3 * Math.sin(u * 2.2), 1.2 + 1.6 * u + 1.4 * u ** 3]);
+      }
+      const m = this.cintaTerreno(camino, 0x7a5434, 0.3);
+      m.visible = false;
+      g.add(m);
+      const top = camino[2];
+      this.cicatrices[zona].push({ m, pos: new THREE.Vector3(top[0], alturaEn(top[0], top[1]) + 2, top[1]) });
+    }
+    this.indexar(g);
+  }
+
+  /** Nubes sobre la zona de la tormenta: más y más oscuras con tormentas más raras. */
+  armarNubes(t) {
+    for (const h of [...this.nubes.children]) { this.nubes.remove(h); liberar(h); }
+    if (!t.activa) return;
+    const [kmA, kmB] = { cuenca: [0, 50], alta: [0, 15], media: [15, 35], baja: [35, 50] }[t.zona] ?? [0, 50];
+    const oscura = Math.min(1, 0.35 + 0.3 * Math.log10(t.T));
+    const color = new THREE.Color(0xc4cdd2).lerp(new THREE.Color(0x56626a), oscura);
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 1, flatShading: true, transparent: true, opacity: 0.86 });
+    const geo = new THREE.IcosahedronGeometry(1, 1);
+    let semilla = 4242 + t.T;
+    const azarN = () => (semilla = (semilla * 16807) % 2147483647) / 2147483647;
+    const zA = zDeKm(kmA);
+    const zB = Math.min(zDeKm(kmB), kmB >= 50 ? -40 : zDeKm(kmB));
+    const pasoZ = 46;
+    // El rótulo va en la nube más cercana al centro de la zona y al río
+    const zMedio = (zA + zB) / 2;
+    let mejor = Infinity;
+    this.posNube = null;
+    for (let z = zA + 14; z < zB - 6; z += pasoZ) {
+      const ciudad = z >= Z_CUENCA;
+      const xr = ciudad ? 0 : xRioEn(z);
+      for (const dx of ciudad ? [-64, -18, 26, 70] : [-66, 60]) {
+        const base = this.baseNubes(z);
+        const c = new THREE.Group();
+        const n = 3 + Math.floor(azarN() * 3);
+        for (let k = 0; k < n; k++) {
+          const s = 5 + azarN() * 5;
+          const b = new THREE.Mesh(geo, mat);
+          b.scale.set(s * 1.4, s * 0.62, s);
+          b.position.set((k - n / 2) * 7 + azarN() * 4, azarN() * 4, (azarN() * 2 - 1) * 6);
+          c.add(b);
+        }
+        c.position.set(xr + dx + (azarN() * 2 - 1) * 8, base + 6, z + (azarN() * 2 - 1) * 8);
+        this.nubes.add(c);
+        const costo = Math.abs(z - zMedio) + (dx > 0 ? 0 : 400) + (ciudad ? Math.abs(dx - 26) : 0);
+        if (costo < mejor) { mejor = costo; this.posNube = c.position.clone().add(new THREE.Vector3(0, 9, 0)); }
+      }
+    }
+  }
+
+  actualizarLluvia(p, r) {
+    const l = r.lluvia;
+    if (!l || !this.gotasLluvia) return;
+    const t = l.t;
+    // Cielo y luz: más oscuros con la tormenta; nublado con muchas lluvias; brumoso y seco con El Niño
+    const oscuro = t.activa ? Math.min(0.85, 0.42 + 0.22 * Math.log10(t.T)) : (l.P30 > 110 ? 0.18 : 0);
+    const seco = l.climaId === 'nino' ? 1 : 0;
+    const clave = [t.activa ? `${t.T}|${t.zona}` : '-', oscuro.toFixed(3), l.climaId].join('|');
+    if (clave !== this.claves.cielo) {
+      this.claves.cielo = clave;
+      const cielo = new THREE.Color(COLOR.cielo).lerp(new THREE.Color(0xe3d9bf), 0.45 * seco).lerp(new THREE.Color(0x6f7c84), oscuro);
+      this.scene.background.copy(cielo);
+      this.scene.fog.color.copy(cielo);
+      this.luzCielo.intensity = 1.35 * (1 - 0.42 * oscuro);
+      this.luzSol.intensity = 2.4 * (1 - 0.68 * oscuro) * (1 + 0.08 * seco);
+      // El paisaje: seco y pardo con El Niño, más verde con La Niña
+      const tinte = { nino: [0xe8c995, 0xf2dfbc, 0x7d7240], nina: [0xe4f5df, 0xeef8ea, 0x2f5530], normal: [0xffffff, 0xffffff, 0x3d5c35] }[l.climaId] ?? [0xffffff, 0xffffff, 0x3d5c35];
+      this.matCuenca?.color.setHex(tinte[0]);
+      this.matTerreno?.color.setHex(tinte[1]);
+      this.matArbol?.color.setHex(tinte[2]);
+      this.armarNubes(t);
+    }
+    // Gotas: cuántas según la intensidad
+    const L3 = this.lluvia3d;
+    L3.n = t.activa ? Math.round(Math.min(L3.MAX, Math.max(900, 110 * t.I))) : 0;
+    L3.zona = t.zona;
+    if (!t.activa) { L3.vivo.fill(0); this.gotasLluvia.visible = false; }
+    // Deslizamientos en las laderas donde la lluvia pasa el umbral
+    const alto = l.desl.nivel === 'alto';
+    let primera = null;
+    for (const zona of ['alta', 'media']) {
+      const ver = alto && l.desl.zonas.includes(zona);
+      for (const c of this.cicatrices[zona]) {
+        c.m.visible = ver;
+        if (ver) primera = c.pos;
+      }
+    }
+    // Quebrada y avenida torrencial
+    const av = l.avenida;
+    this.quebradaLodo.visible = av.probable;
+    this.quebradaAgua.visible = !av.probable;
+    this.frenteAvenida.visible = av.probable;
+    if (!av.probable) this.avanceAvenida = 0;
+    this.lluviaVer = { tormenta: t.activa, ciudad: t.activa && t.z.ciudad, deslizamiento: Boolean(primera), quebrada: av.llueve };
+    if (t.activa) {
+      const pos = this.posNube ?? new THREE.Vector3(xRioEn(-200), 110, -200);
+      this.etiqueta('tormenta', `${t.T} años · ${fmt(t.I, 0)} mm/h durante ${t.D >= 60 ? `${fmt(t.D / 60, 1)} h` : `${fmt(t.D, 0)} min`} · ${t.z.nombre.toLowerCase()}`, t.T >= 10 ? 'alerta' : 'aviso', pos, `Tormenta de ${t.T} años`);
+    }
+    if (primera) this.etiqueta('deslizamiento', `la lluvia es el ${fmt(100 * l.desl.r, 0)} % del umbral`, 'alerta', primera);
+    if (av.llueve) {
+      this.etiqueta('avenida', av.probable ? `${fmt(av.Qlodo, 0)} m³/s de ${av.tipo} · llega a la bocatoma en ${fmt(av.tLlegada, 1)} h` : `crece a ${fmt(av.Qagua, 0)} m³/s de agua, sin avenida`,
+        av.probable ? 'alerta' : 'aviso', this.posQuebrada, av.probable ? 'Avenida torrencial' : 'Quebrada de montaña');
+    }
+  }
+
+  /** Zona de la tormenta en z [z0, z1]. */
+  rangoTormenta(zona) {
+    const km = { cuenca: [0, 50], alta: [0, 15], media: [15, 35], baja: [35, 50] }[zona] ?? [0, 50];
+    return [zDeKm(km[0]), km[1] >= 50 ? Z_CORTE : zDeKm(km[1])];
+  }
+
+  pasoLluvia(dt) {
+    const L3 = this.lluvia3d;
+    // Frente de la avenida: baja de la quebrada a la bocatoma (el recorrido de unas 3 h, en 12 s)
+    if (this.frenteAvenida.visible) {
+      this.avanceAvenida = ((this.avanceAvenida ?? 0) + dt / 12) % 1;
+      const z = this.zQuebrada + (zDeKm(R.KM_BOCATOMA) - this.zQuebrada) * this.avanceAvenida;
+      this.frenteAvenida.position.set(xRioEn(z), this.superficieRio(z) + 0.12, z);
+      for (const tr of this.troncos) tr.rotation.y += tr.userData.giro * dt;
+    }
+    if (!L3 || L3.n === 0) return;
+    const d = this.camara.position.distanceTo(this.controles.target);
+    const esc = Math.max(0.6, d / 120);
+    const largo = 2.6 * esc;
+    const v = 48 * esc;
+    const tg = this.controles.target;
+    const hs = Math.min(280, Math.max(45, 0.65 * d));
+    const [za, zb] = this.rangoTormenta(L3.zona);
+    const z0 = Math.max(za, tg.z - hs, Z_NACIMIENTO);
+    const z1 = Math.min(zb, tg.z + hs, Z_CORTE);
+    if (z1 <= z0) { this.gotasLluvia.visible = false; return; }
+    const x0 = Math.max(-113, tg.x - hs);
+    const x1 = Math.min(123, tg.x + hs);
+    const pos = this.gotasLluvia.geometry.attributes.position.array;
+    const viento = 0.18 * largo;
+    for (let i = 0; i < L3.n; i++) {
+      if (!L3.vivo[i] || L3.y[i] < L3.suelo[i] || L3.z[i] < z0 - 20 || L3.z[i] > z1 + 20) {
+        const x = x0 + Math.random() * (x1 - x0);
+        const z = z0 + Math.random() * (z1 - z0);
+        const suelo = alturaEn(x, z);
+        const techo = Math.max(suelo + 6, this.baseNubes(z));
+        L3.x[i] = x;
+        L3.z[i] = z;
+        L3.suelo[i] = suelo;
+        L3.y[i] = L3.vivo[i] ? techo : suelo + Math.random() * (techo - suelo);
+        L3.vivo[i] = 1;
+      }
+      L3.y[i] -= v * dt;
+      const k = i * 6;
+      pos[k] = L3.x[i]; pos[k + 1] = L3.y[i]; pos[k + 2] = L3.z[i];
+      pos[k + 3] = L3.x[i] - viento; pos[k + 4] = L3.y[i] + largo; pos[k + 5] = L3.z[i];
+    }
+    this.gotasLluvia.geometry.setDrawRange(0, L3.n * 2);
+    this.gotasLluvia.geometry.attributes.position.needsUpdate = true;
+    this.gotasLluvia.visible = true;
+  }
+
   // ── Vistas de la cámara ──────────────────────────────────────────────────
   /** Posición y punto de mira de cada vista (antes de alejar en pantallas angostas). */
   calcularVista(nombre) {
@@ -2981,6 +3272,7 @@ export class Escena {
   /** Vista que corresponde a la pestaña activa. */
   vistaDePestana(tab) {
     if (tab === 'bombas') return this.p?.bombaAnalisis === 'riego' ? 'riego' : 'general';
+    if (tab === 'lluvia') return this.p?.tormentaT > 0 && this.p?.tormentaZona === 'baja' ? 'general' : 'cuenca';
     return { rio: 'cuenca', represa: 'represa', riego: 'riego', huella: 'riego', acuifero: 'acuifero' }[tab] ?? 'general';
   }
 
@@ -3015,6 +3307,7 @@ export class Escena {
       represa: ['cuenca', 'represa'], central: ['represa'], linea: ['cuenca', 'represa'], tuberiaPresa: ['represa'],
       corteRio: ['acuifero'], corteNivel: ['acuifero'], corteSuelo: ['acuifero'], corteArcilla: ['acuifero'],
       corteAcuifero: ['acuifero'], corteRoca: ['acuifero'], pozo: ['acuifero'], corteFlujo: ['acuifero'],
+      tormenta: ['general', 'cuenca'], deslizamiento: ['cuenca'], avenida: ['cuenca'],
     };
     // El rótulo del vertimiento va a la orilla este en la ciudad (el río queda a la izquierda
     // de la vista) y a la oeste en la cuenca y el cultivo (los lotes están en la orilla este)
@@ -3027,10 +3320,18 @@ export class Escena {
     // La línea se rotula junto a la presa en la vista Represa y a media ladera en la Cuenca
     const el = this.etiquetas.linea;
     if (el && this.posLinea) el.obj.position.copy(vista === 'represa' ? this.posLinea : this.posLineaCuenca);
+    // En la pestaña Lluvia la cuenca se despeja: solo las zonas, las amenazas, la bocatoma y el cultivo
+    const soloLluvia = this.tabActiva === 'lluvia' && vista === 'cuenca';
+    const deLluvia = ['zonaAlta', 'zonaMedia', 'zonaBaja', 'tormenta', 'deslizamiento', 'avenida', 'bocatoma', 'riego'];
     for (const [id, e] of Object.entries(this.etiquetas)) {
-      let ver = (reglas[id] ?? ['general']).includes(vista);
+      let ver = (reglas[id] ?? ['general']).includes(vista) && (!soloLluvia || deLluvia.includes(id));
+      // El rótulo de la quebrada tapa el de la zona alta: en la pestaña Lluvia se queda el de la amenaza
+      if (id === 'zonaAlta' && soloLluvia && this.lluviaVer?.quebrada) ver = false;
       if (id === 'vertimiento') ver = ver && Boolean(cal?.inicio);
       if (id === 'corteArcilla') ver = ver && Boolean(this.r?.acuifero.est.tipo.capa);
+      if (id === 'tormenta') ver = ver && Boolean(this.lluviaVer?.tormenta) && (vista === 'cuenca' || Boolean(this.lluviaVer?.ciudad));
+      if (id === 'deslizamiento') ver = ver && Boolean(this.lluviaVer?.deslizamiento);
+      if (id === 'avenida') ver = ver && Boolean(this.lluviaVer?.quebrada);
       if (e.obj.visible !== ver) e.obj.visible = ver;
     }
   }
@@ -3344,6 +3645,7 @@ export class Escena {
       this.chorroGrifo.paso(dt);
       this.chorroCompuerta.paso(dt);
       this.pasoCanal(dt);
+      this.pasoLluvia(dt);
     }
     this.renderer.render(this.scene, this.camara);
     this.etiquetador.render(this.scene, this.camara);

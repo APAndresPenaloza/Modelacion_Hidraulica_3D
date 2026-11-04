@@ -34,7 +34,7 @@ test('Filo de agua: la represa suelta lo que entra y el río y el acueducto no c
   assert.equal(rep.dQ, 0);
   cerca(r.rio.boc.Q, R.caudalRio(2.5).Q, 1e-9);
   assert.equal(Math.round(r.costo.costo), 5006231);      // el costo de bombeo de siempre
-  assert.equal(r.revisionTotal.length, 60);
+  assert.equal(r.revisionTotal.length, 64);          // 60 del diseño y 4 de la lluvia
   assert.ok(r.revisionTotal.every((c) => c.nivel === 'ok'));
 });
 

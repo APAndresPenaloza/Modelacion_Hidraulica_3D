@@ -4,7 +4,8 @@
  * → acometida → medidor → llave de paso → grifo de la vivienda de análisis.
  * Además: el río y su cuenca (rio.js), la represa de la zona alta (represa.js), las
  * estaciones de bombeo (bombas.js), el riego de la zona rural (riego.js), el agua
- * subterránea (acuifero.js) y la huella de los cultivos (huella.js).
+ * subterránea (acuifero.js), la huella de los cultivos (huella.js) y la lluvia que lo mueve
+ * todo, con sus tormentas y desastres (lluvia.js).
  * Funciones puras: reciben los parámetros y el estado (nivel, bomba, hora) y devuelven
  * todos los resultados.
  */
@@ -16,6 +17,7 @@ import * as G from './riego.js';
 import * as A from './acuifero.js';
 import * as P from './represa.js';
 import * as H from './huella.js';
+import * as L from './lluvia.js';
 
 export const PARAMETROS_DISENO = Object.freeze({
   // Control de la bomba por niveles
@@ -55,8 +57,15 @@ export const PARAMETROS_DISENO = Object.freeze({
   recubrimiento: 1.0, cama: 0.1, holgura: 0.25,
   // Criterios de referencia (editables; contrastar con el RAS)
   Vmin: 0.5, Vmax: 3.0, VmaxSuccion: 1.5, presionMaxRed: 60,
+  // Lluvia: clima del año y tormenta de hoy (lluvia.js)
+  climaAno: 'normal',             // 'normal' | 'nino' (El Niño, seco) | 'nina' (La Niña, lluvioso)
+  tormentaT: 0,                   // período de retorno de la tormenta [años]; 0 = sin tormenta
+  tormentaD: 180,                 // duración de la tormenta [min]
+  tormentaZona: 'cuenca',         // 'cuenca' | 'alta' | 'media' | 'baja' (la ciudad)
+  lluviaM: 75,                    // lluvia máxima diaria promedio de la estación [mm] (curva IDF)
+  mesAno: -1,                     // mes con el que se fijó el río (−1 = ninguno)
   // Río y cuenca: lluvias, sedimento, vertimiento y acuífero
-  lluvia: 'normal',               // escenario que fija la cota del río y el sedimento
+  lluvia: 'normal',               // escenario que fija la cota del río, el sedimento, el clima y la tormenta
   sedimento: 150,                 // mg/L de sólidos en suspensión
   vertTipo: 'tratada', vertZona: 'media', Qvert: 20,   // L/s
   // Acuífero (zona del corte) y pozo de una finca
@@ -282,6 +291,12 @@ export function calcular(p, estado) {
   const huella = H.calcularHuella(p, {
     cotaRio: p.cotaRio,
     excesoArroyo: canal && canal.desborde ? p.Qcrecida - canal.Qcap : 0,
+    fLluvia: L.clima(p.climaAno).fLluvia,
+  });
+  // La lluvia: explica el río natural (sin la represa); la creciente y la sequía se miden
+  // con el río que deja la represa
+  const lluvia = L.calcularLluvia({ ...p, cotaRio: p.cotaRioNatural }, {
+    Qcap: canal ? canal.Qcap : NaN, Qcrecida: p.Qcrecida, cotaVega: H.COTA_VEGA, cotaEf: p.cotaRio,
   });
 
   // Toda la revisión del diseño, por componente (para el Excel y el conteo)
@@ -294,6 +309,7 @@ export function calcular(p, estado) {
     ...represa.checks.map((c) => ({ ...c, area: 'Represa' })),
     ...huella.checks.map((c) => ({ ...c, area: 'Huella' })),
     ...acuifero.checks.map((c) => ({ ...c, area: 'Acuífero' })),
+    ...lluvia.checks.map((c) => ({ ...c, area: 'Lluvia' })),
   ];
 
   return {
@@ -303,7 +319,7 @@ export function calcular(p, estado) {
     succion, aduccion, alturaBombeo: Hb, potencia, Vmes, costo, horasDia, ciclo, golpe,
     hfBombeo, Hmedia: mes.Hmedia, nivelMedio: mes.nivelMedio, potenciaMedia: mes.potencia, alcanza: mes.alcanza,
     potenciaElectrica: mes.potenciaElectrica, etaMotor: bombaA.motor.eta, capta: mes.capta,
-    rio, riego, bombas, acuifero, represa, anoRepresa, huella, revisionTotal,
+    rio, riego, bombas, acuifero, represa, anoRepresa, huella, lluvia, revisionTotal,
     cotaRioNatural: p.cotaRioNatural, cotaRioEf: p.cotaRio,
     distribucion: conduccion, conduccion, Hentrada, Hestatica,
     red, redDiseno, casa, grifo, Hnodo,

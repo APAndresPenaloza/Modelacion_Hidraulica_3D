@@ -41,13 +41,21 @@ export function caudalRio(cota, cauce = CAUCE) {
   return { y, A, P, R, V, Q: V * A };
 }
 
-/** Escenarios de lluvia: cada uno fija la cota del río y el sedimento en suspensión. */
+/**
+ * Escenarios de lluvia: cada uno fija la cota del río y el sedimento en suspensión, y
+ * algunos el clima del año (clima) y una tormenta (tormenta: período de retorno T en
+ * años, duración D en minutos y zona donde cae). La lluvia que explica cada cota está en
+ * lluvia.js.
+ */
 export const LLUVIAS = {
   seca: { nombre: 'Época seca', cota: 1.9, sedimento: 40 },
   normal: { nombre: 'Condición normal', cota: 2.5, sedimento: 150 },
   lluvias: { nombre: 'Temporada de lluvias', cota: 2.9, sedimento: 800 },
-  aguacero: { nombre: 'Aguacero fuerte (creciente)', cota: 3.3, sedimento: 3000 },
-  inundacion: { nombre: 'Creciente extraordinaria (inundación)', cota: 3.7, sedimento: 5000 },
+  aguacero: { nombre: 'Aguacero fuerte (creciente)', cota: 3.3, sedimento: 3000, tormenta: { T: 10, D: 180, zona: 'cuenca' } },
+  inundacion: { nombre: 'Creciente extraordinaria (inundación)', cota: 3.7, sedimento: 5000, tormenta: { T: 100, D: 360, zona: 'cuenca' } },
+  nino: { nombre: 'Sequía de El Niño', cota: 1.73, sedimento: 20, clima: 'nino' },
+  nina: { nombre: 'Temporada de lluvias con La Niña', cota: 3.39, sedimento: 3400, clima: 'nina' },
+  avenida: { nombre: 'Tormenta en la montaña (avenida torrencial)', cota: 3.1, sedimento: 5000, tormenta: { T: 100, D: 360, zona: 'alta' } },
 };
 
 

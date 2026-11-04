@@ -11,10 +11,11 @@ import * as G from './riego.js';
 import * as A from './acuifero.js';
 import * as P from './represa.js';
 import * as H from './huella.js';
+import * as L from './lluvia.js';
 import { Escena } from './escena3d.js';
 import { crearGrafica, actualizarGrafica, serieLinea, seriePuntos, paleta } from './graficas.js';
 import { ExperimentoReynolds } from './reynolds.js';
-import { Registro, INTERVALOS, relojSimulado, crearLibro, nombreArchivo, descargarArchivo, libroRepresa, libroAno, libroHuella, libroCultivos } from './datos.js';
+import { Registro, INTERVALOS, relojSimulado, crearLibro, nombreArchivo, descargarArchivo, libroRepresa, libroAno, libroHuella, libroCultivos, libroLluvia, libroLluviaMeses } from './datos.js';
 
 // ── Estado ────────────────────────────────────────────────────────────────
 const NIVEL_INICIAL = 4.4;
@@ -62,6 +63,7 @@ const lps = M.lpsAm3s;
 
 // ── Definición de pestañas y controles ─────────────────────────────────────
 const TABS = [
+  { id: 'lluvia', nombre: 'Lluvia', extra: true, revision: true, tablas: true, figura: 'Mapa de amenazas de la cuenca', intro: 'La lluvia mueve todo el sistema: la de los últimos 30 días sobre la cuenca fija el caudal del río, su sedimento y lo que le entra al embalse; la del año decide cuánto se riega y cuánta agua recarga el acuífero; y una tormenta puede desbordar el arroyo de la ciudad, sacar el río a la vega, mover las laderas de la montaña o bajar una avenida torrencial por una quebrada. El clima del año cambia con El Niño (más seco: la bocatoma se puede quedar sin agua) y La Niña (más lluvioso: crecientes). Aquí se eligen el clima, la lluvia del mes y la tormenta de hoy; el mapa y la escena muestran dónde está la amenaza y el nivel de alerta.' },
   { id: 'rio', nombre: 'Río', extra: true, revision: true, tablas: true, perfil: true, intro: 'El río baja de la Sierra Nevada por tres zonas: alta (montaña), media (piedemonte) y baja (llanura y ciudad). Las lluvias suben su nivel y le traen sedimento; con una creciente se sale a la vega e inunda el cultivo de la llanura. Un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos, que siguen río abajo y pueden pasar al agua subterránea (pestaña Acuífero). Aquí se fijan el nivel del río natural, el sedimento y el vertimiento; la represa de la zona alta puede subir o bajar el caudal aguas abajo (pestaña Represa). Con la vista Cuenca se recorre el río de la montaña al mar.' },
   { id: 'represa', nombre: 'Represa', extra: true, revision: true, tablas: true, figura: 'Corte de la presa y del embalse', intro: 'En la zona alta, en el km 7, una presa cierra el valle y forma un embalse: guarda el agua de las lluvias y la suelta cuando hace falta. Al pie de la presa una central convierte la caída del agua en energía eléctrica, y una línea la lleva 40 km hasta la ciudad; por una tubería también se puede bajar agua del embalse a la ciudad por gravedad. Lo que la presa guarda o suelta cambia el caudal del río en las zonas alta, media y baja. Aquí se comparan el costo de producir la energía con el de llevarla a la ciudad, y el de bombear el agua del río con el de traerla del embalse. Con la vista Represa se ven la presa, el embalse, la central, la línea y la tubería.' },
   { id: 'captacion', nombre: 'Captación', extra: true, intro: 'El agua del río entra por la rejilla de la bocatoma, deja la arena en el desarenador y pasa al pozo de succión, de donde la bomba la eleva hasta el tanque. Aquí se fija cuánto se bombea, el tamaño del desarenador y cuánto cuesta la energía.' },
@@ -108,6 +110,59 @@ const OPC_LLUVIA = [
   ...Object.entries(R.LLUVIAS).map(([valor, l]) => ({ valor, nombre: `${l.nombre}: cota ${fmt(l.cota)} m, ${R.miles(l.sedimento)} mg/L` })),
   { valor: 'personalizada', nombre: 'Personalizado (con los deslizadores)' },
 ];
+
+// ── La lluvia mueve el río: escenarios, clima, mes y tormenta ─────────────
+/** Tormenta de hoy con los parámetros del panel. */
+const tormentaActual = () => L.tormenta({ T: p.tormentaT, D: p.tormentaD, zona: p.tormentaZona, M: p.lluviaM });
+
+/** Aplica un escenario de lluvia: río, sedimento, clima del año, tormenta y crecida del arroyo. */
+function aplicarEscenario(v) {
+  const e = L.parametrosEscenario(v, p.lluviaM);
+  if (e) Object.assign(p, e, { mesAno: -1 });
+}
+
+/**
+ * Lleva el río a una lluvia de 30 días P30 [mm] con el clima y la tormenta del panel: cambia
+ * la cota del río natural y su sedimento. fSub: aporte subterráneo si no es el del clima.
+ */
+function moverRio(P30, fSub) {
+  const x = L.rioDeLluvia(P30, { climaId: p.climaAno, t: tormentaActual(), fSub });
+  p.cotaRio = limitar(x.cota, 1.2, 4);
+  p.sedimento = Math.round(limitar(x.sedimento, 10, 5000));
+  p.lluvia = 'personalizada';
+}
+
+/** Después de cambiar la tormenta: la lluvia de 30 días sigue igual y la tormenta se suma. */
+function ajustarRio() {
+  const { P30, fSub, climaId } = r.lluvia;
+  moverRio(P30, climaId === p.climaAno && Math.abs(fSub - L.clima(p.climaAno).fSub) > 1e-12 ? fSub : undefined);
+  p.Qcrecida = L.crecidaParaCanal(tormentaActual(), p.lluviaM);
+}
+
+/** Después de cambiar el clima del año: el mismo mes, o la misma lluvia en proporción. */
+function cambiarClima() {
+  const antes = L.clima(r.lluvia.climaId);
+  const ahora = L.clima(p.climaAno);
+  moverRio(p.mesAno >= 0 ? L.P30_MES[p.mesAno] * ahora.fLluvia : (r.lluvia.P30 * ahora.fLluvia) / antes.fLluvia);
+}
+
+const OPC_CLIMA = Object.entries(L.CLIMAS).map(([valor, c]) => ({
+  valor, nombre: `${c.nombre}: ${R.miles(L.CUENCA.P30medio * 12 * c.fLluvia)} mm en la cuenca${c.fLluvia === 1 ? '' : ` (${c.fLluvia < 1 ? '−' : '+'}${fmt(Math.abs(c.fLluvia - 1) * 100, 0)} %)`}`,
+}));
+const opcionesMes = () => [
+  { valor: -1, nombre: 'Ninguno (el río del escenario o de los deslizadores)' },
+  ...L.MESES.map((m, k) => {
+    const P30 = L.P30_MES[k] * L.clima(p.climaAno).fLluvia;
+    const cota = L.cotaDeLluvia(P30, { climaId: p.climaAno });
+    return { valor: k, nombre: `${L.NOMBRES_MES[k][0].toUpperCase()}${L.NOMBRES_MES[k].slice(1)}: ${fmt(P30, 0)} mm en 30 días → cota ${fmt(cota)} m` };
+  }),
+];
+const OPC_PERIODOS = [
+  { valor: 0, nombre: 'Sin tormenta' },
+  ...L.PERIODOS.map((T) => ({ valor: T, nombre: `Una vez cada ${T} años (${fmt(100 / T, 0)} % al año)` })),
+];
+const OPC_ZONAS_TORMENTA = Object.entries(L.ZONAS_TORMENTA).map(([valor, z]) => ({ valor, nombre: z.nombre }));
+const hayTormenta = () => p.tormentaT > 0;
 const OPC_TIPOS_BOMBA = B.ORDEN_TIPOS.map((valor) => ({ valor, nombre: B.TIPOS_BOMBA[valor].nombre }));
 const esBombaA = () => p.bombaAnalisis !== 'riego';
 const esBombaR = () => p.bombaAnalisis === 'riego';
@@ -129,12 +184,33 @@ function textoCotaRio(v) {
 }
 
 const CONTROLES = [
-  { tab: 'rio', grupo: 'Nivel del río y lluvias' },
-  { tab: 'rio', id: 'lluvia', clave: 'lluvia', etiqueta: 'Escenario de lluvia', tipo: 'opciones', opciones: OPC_LLUVIA,
-    alCambiar: (v) => { const l = R.LLUVIAS[v]; if (l) { p.cotaRio = l.cota; p.sedimento = l.sedimento; } } },
+  { tab: 'lluvia', grupo: 'Escenario' },
+  { tab: 'lluvia', id: 'lluvia0', clave: 'lluvia', etiqueta: 'Escenario de lluvia', tipo: 'opciones', opciones: OPC_LLUVIA, alCambiar: aplicarEscenario },
+  { tab: 'lluvia', grupo: 'Clima del año' },
+  { tab: 'lluvia', id: 'climaAno', clave: 'climaAno', etiqueta: 'Clima del año', tipo: 'opciones', opciones: OPC_CLIMA, alCambiar: cambiarClima },
+  { tab: 'lluvia', id: 'mesAno', clave: 'mesAno', etiqueta: 'Llevar el río a la lluvia de un mes', tipo: 'opciones', numero: true, opciones: opcionesMes,
+    alCambiar: (k) => { if (k >= 0) moverRio(L.P30_MES[k] * L.clima(p.climaAno).fLluvia); } },
   {
-    tab: 'rio', id: 'cotaRio', clave: 'cotaRio', etiqueta: 'Cota de la lámina del río (sin la represa)', unidad: 'm.s.n.m.', min: 1.2, max: 3.8, paso: 0.01, dec: 2,
-    escribir: (v) => { p.cotaRio = v; p.lluvia = 'personalizada'; },
+    tab: 'lluvia', id: 'P30', etiqueta: 'Lluvia de los últimos 30 días en la cuenca', unidad: 'mm', min: 0, max: 300, paso: 1, dec: 0,
+    leer: () => r.lluvia.P30,
+    escribir: (v) => { moverRio(v); p.mesAno = -1; },
+    extra: () => `El río lleva ${fmt(r.lluvia.Qboc)} m³/s en la bocatoma sin la represa (cota ${fmt(p.cotaRio)} m)${r.lluvia.t.activa ? `, con ${fmt(r.lluvia.t.Pcuenca, 1)} mm de la tormenta repartidos en la cuenca` : ''}. Un año normal deja ${fmt(L.CUENCA.P30medio, 0)} mm cada 30 días en promedio.`,
+  },
+  { tab: 'lluvia', grupo: 'Tormenta de hoy' },
+  { tab: 'lluvia', id: 'tormentaT', clave: 'tormentaT', etiqueta: 'Período de retorno de la tormenta', tipo: 'opciones', numero: true, opciones: OPC_PERIODOS, alCambiar: ajustarRio },
+  { tab: 'lluvia', id: 'tormentaD', clave: 'tormentaD', etiqueta: 'Duración de la tormenta', unidad: 'min', min: 15, max: 1440, paso: 15, dec: 0, visible: hayTormenta,
+    escribir: (v) => { p.tormentaD = v; ajustarRio(); },
+    extra: () => { const t = r.lluvia.t; return t.activa ? `Caen ${fmt(t.P, 1)} mm en ${fmtTiempo(t.D * 60)}: ${fmt(t.I, 1)} mm/h en promedio (la de 24 h del mismo período deja ${fmt(t.P24, 1)} mm)` : ''; } },
+  { tab: 'lluvia', id: 'tormentaZona', clave: 'tormentaZona', etiqueta: 'Dónde cae', tipo: 'opciones', opciones: OPC_ZONAS_TORMENTA, visible: hayTormenta, alCambiar: ajustarRio },
+  { tab: 'lluvia', id: 'lluviaM', clave: 'lluviaM', etiqueta: 'Lluvia máxima diaria promedio de la estación (M)', unidad: 'mm', min: 40, max: 150, paso: 1, dec: 0,
+    escribir: (v) => { p.lluviaM = v; ajustarRio(); },
+    extra: (v) => `Con cv = ${fmt(L.IDF.cv, 2)}: la lluvia de 24 h de 2 años es ${fmt(L.lluvia24(2, v), 1)} mm y la de 100 años, ${fmt(L.lluvia24(100, v), 1)} mm. Valor de referencia: se cambia por el de la estación del IDEAM.` },
+
+  { tab: 'rio', grupo: 'Nivel del río y lluvias' },
+  { tab: 'rio', id: 'lluvia', clave: 'lluvia', etiqueta: 'Escenario de lluvia (el de la pestaña Lluvia)', tipo: 'opciones', opciones: OPC_LLUVIA, alCambiar: aplicarEscenario },
+  {
+    tab: 'rio', id: 'cotaRio', clave: 'cotaRio', etiqueta: 'Cota de la lámina del río (sin la represa)', unidad: 'm.s.n.m.', min: 1.2, max: 4, paso: 0.01, dec: 2,
+    escribir: (v) => { p.cotaRio = v; p.lluvia = 'personalizada'; p.mesAno = -1; },
     extra: textoCotaRio,
   },
   { tab: 'rio', id: 'sedimento', clave: 'sedimento', etiqueta: 'Sedimento en suspensión', unidad: 'mg/L', min: 10, max: 5000, paso: 10, dec: 0,
@@ -345,11 +421,10 @@ const CONTROLES = [
   { tab: 'huella', id: 'impuestoCarbono', clave: 'impuestoCarbono', etiqueta: 'Tarifa del impuesto al carbono', unidad: 'COP/t', min: 0, max: 200000, paso: 500, dec: 0,
     extra: () => 'Por tonelada de CO₂: la tarifa de 2026 es 29 070.49 COP (DIAN, Resolución 000003 de 2026)' },
   { tab: 'huella', grupo: 'Inundación del lote' },
-  { tab: 'huella', id: 'lluvia2', clave: 'lluvia', etiqueta: 'Escenario de lluvia (el de la pestaña Río)', tipo: 'opciones', opciones: OPC_LLUVIA,
-    alCambiar: (v) => { const l = R.LLUVIAS[v]; if (l) { p.cotaRio = l.cota; p.sedimento = l.sedimento; } } },
+  { tab: 'huella', id: 'lluvia2', clave: 'lluvia', etiqueta: 'Escenario de lluvia (el de la pestaña Lluvia)', tipo: 'opciones', opciones: OPC_LLUVIA, alCambiar: aplicarEscenario },
   {
-    tab: 'huella', id: 'cotaRio2', clave: 'cotaRio', etiqueta: 'Cota del río sin la represa', unidad: 'm.s.n.m.', min: 1.2, max: 3.8, paso: 0.01, dec: 2,
-    escribir: (v) => { p.cotaRio = v; p.lluvia = 'personalizada'; },
+    tab: 'huella', id: 'cotaRio2', clave: 'cotaRio', etiqueta: 'Cota del río sin la represa', unidad: 'm.s.n.m.', min: 1.2, max: 4, paso: 0.01, dec: 2,
+    escribir: (v) => { p.cotaRio = v; p.lluvia = 'personalizada'; p.mesAno = -1; },
     extra: () => `La vega del lote de la zona baja está a la cota ${fmt(H.COTA_VEGA)} m; con la represa el río queda a la cota ${fmt(cotaEf())} m`,
   },
   { tab: 'huella', id: 'diasInundacion', clave: 'diasInundacion', etiqueta: 'Días que dura la creciente sobre el lote', unidad: 'días', min: 0.5, max: 20, paso: 0.5, dec: 1 },
@@ -396,7 +471,10 @@ const CONTROLES = [
   { tab: 'arroyo', grupo: 'Pendiente, material y crecida' },
   { tab: 'arroyo', id: 'pendiente', clave: 'pendiente', etiqueta: 'Pendiente del fondo (S)', unidad: 'm/m', min: 0.0005, max: 0.03, paso: 0.0005, dec: 4 },
   { tab: 'arroyo', id: 'nManning', clave: 'nManning', etiqueta: 'Material del canal', tipo: 'material' },
-  { tab: 'arroyo', id: 'Qcrecida', clave: 'Qcrecida', etiqueta: 'Caudal de la crecida', unidad: 'm³/s', min: 0.5, max: 40, paso: 0.1, dec: 2 },
+  { tab: 'arroyo', id: 'Qcrecida', clave: 'Qcrecida', etiqueta: 'Caudal de la crecida', unidad: 'm³/s', min: 0.5, max: 40, paso: 0.1, dec: 2,
+    extra: () => (r.lluvia.arroyo.activa
+      ? `La tormenta de ${p.tormentaT} años sobre la ciudad da ${fmt(r.lluvia.arroyo.Q)} m³/s (método racional, pestaña Lluvia)`
+      : `Crecida de diseño: la tormenta de ${L.ARROYO.Tdiseno} años sobre la ciudad da ${fmt(L.ARROYO.Qdiseno)} m³/s (pestaña Lluvia)`) },
   { tab: 'arroyo', id: 'alturaCaida', clave: 'alturaCaida', etiqueta: 'Caída a la salida de la compuerta', unidad: 'm', min: 0.3, max: 4, paso: 0.05, dec: 2 },
 ];
 
@@ -1237,7 +1315,290 @@ function presaSVG() {
   };
 }
 
+// ── Lluvia: mapa de amenazas de la cuenca ─────────────────────────────────
+const NIVEL_ALERTA = { verde: 'ok', amarilla: 'aviso', naranja: 'naranja', roja: 'alerta' };
+const NOMBRE_ALERTA = { verde: 'Alerta verde', amarilla: 'Alerta amarilla', naranja: 'Alerta naranja', roja: 'Alerta roja' };
+const COLOR_NIVEL = { ok: 'var(--ok)', aviso: 'var(--aviso)', naranja: 'var(--piezo)', alerta: 'var(--alerta)', nada: 'var(--tinta-2)' };
+/** Tramo del río [km] donde cae la tormenta según la zona. */
+const KM_TORMENTA = { cuenca: [0, 50], alta: [0, 15], media: [15, 35], baja: [35, 50] };
+
+/** Estado de cada amenaza para el mapa y la escena: { id, km, nombre, texto, nivel }. */
+function amenazasLluvia() {
+  const l = r.lluvia;
+  const d = l.desl;
+  const av = l.avenida;
+  const ladera = (zona, km) => {
+    const llueve = d.zonas.includes(zona);
+    const nivel = !llueve ? 'nada' : (d.r >= 1 ? 'alerta' : (d.r >= 0.7 ? 'aviso' : 'ok'));
+    return { id: `ladera-${zona}`, km, nombre: `Laderas de la ${R.ZONAS[zona].nombre.toLowerCase()}`, nivel,
+      texto: llueve ? `deslizamientos: la lluvia es el ${fmt(100 * d.r, 0)} % del umbral (${d.nivel === 'alto' ? 'se esperan' : (d.nivel === 'medio' ? 'cerca del umbral' : 'poco probables')})` : 'sin tormenta en estas laderas' };
+  };
+  const uso = p.Qcrecida / r.canal.Qcap;
+  const margen = L.MARGEN_ALERTA;
+  return [
+    ladera('alta', 6),
+    { id: 'quebrada', km: L.QUEBRADA.km, nombre: 'Quebrada de montaña', nivel: av.probable ? 'alerta' : (av.llueve && d.r >= 0.7 ? 'aviso' : (av.llueve ? 'ok' : 'nada')),
+      texto: av.probable ? `avenida torrencial probable: ${fmt(av.Qlodo, 0)} m³/s de ${av.tipo}; llega a la bocatoma en ${fmt(av.tLlegada, 1)} h` : (av.llueve ? `crece a ${fmt(av.Qagua, 0)} m³/s de agua, sin avenida` : 'sin tormenta en la montaña') },
+    ladera('media', 22),
+    { id: 'bocatoma', km: R.KM_BOCATOMA - 0.7, nombre: 'Bocatoma de la ciudad', nivel: !l.capta ? 'alerta' : (l.cotaEf < R.COTA_MIN_CAPTACION + margen ? 'aviso' : 'ok'),
+      texto: l.capta ? `capta: ${fmt(l.cotaEf - R.REJILLA.fondo)} m de agua sobre la rejilla` : `sequía: el río (cota ${fmt(l.cotaEf)} m) no alcanza la rejilla` },
+    { id: 'arroyo', km: 46.2, nombre: 'Arroyo de la ciudad', nivel: uso > 1 ? 'alerta' : (uso > 0.85 ? 'aviso' : 'ok'),
+      texto: uso > 1 ? `se desborda: ${fmt(p.Qcrecida)} m³/s y el canal lleva ${fmt(r.canal.Qcap)}` : `el canal va al ${fmt(100 * uso, 0)} % de su capacidad${l.arroyo.activa ? ' con la tormenta' : ''}` },
+    { id: 'vega', km: 48.6, nombre: 'Vega del río y el cultivo', nivel: l.vega > 0 ? 'alerta' : (l.cotaEf > H.COTA_VEGA - margen ? 'aviso' : 'ok'),
+      texto: l.vega > 0 ? `creciente: ${fmt(l.vega)} m de agua sobre el lote` : `el río está ${fmt(H.COTA_VEGA - l.cotaEf)} m por debajo de la vega` },
+  ];
+}
+
+function amenazasSVG() {
+  const l = r.lluvia;
+  const t = l.t;
+  const W = 360;
+  const H = 196;
+  const x0 = 12;
+  const x1 = W - 12;
+  const yTop = 58;
+  const yBase = 166;
+  const X = (km) => x0 + (km / 50) * (x1 - x0);
+  const Y = (z) => yBase - (z / 2000) * (yBase - yTop);
+  const lista = amenazasLluvia();
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" class="svg-red">`;
+  const opacidad = { alta: 0.04, media: 0.08, baja: 0.13 };
+  for (const [id, z] of Object.entries(R.ZONAS)) {
+    const xa = X(z.km[0]);
+    const xb = X(z.km[1]);
+    svg += `<rect x="${xa}" y="2" width="${xb - xa}" height="${yBase - 2}" fill="var(--agua)" opacity="${opacidad[id]}"/>`;
+    svg += `<text x="${(xa + xb) / 2}" y="13" text-anchor="middle" class="t-chica t-sel">${z.nombre}</text>`;
+  }
+  // Tormenta: nube y lluvia sobre la zona donde cae (más rayas con más intensidad)
+  if (t.activa) {
+    const [ka, kb] = KM_TORMENTA[t.zona];
+    const xa = X(ka) + 4;
+    const xb = X(kb) - 4;
+    const oscura = t.T >= 25 ? 0.75 : (t.T >= 10 ? 0.6 : 0.45);
+    const n = Math.round(limitar(t.I / 3, 6, 46) * ((xb - xa) / (x1 - x0)) + 4);
+    for (let k = 0; k < n; k++) {
+      const x = xa + ((k + 0.5) * (xb - xa)) / n;
+      const km = ((x - x0) / (x1 - x0)) * 50;
+      const yS = Y(cotaCauce(km)) - 3;
+      const y0 = 30 + ((k * 7) % 9);
+      if (yS > y0 + 6) svg += `<line x1="${x.toFixed(1)}" y1="${y0}" x2="${(x - 5).toFixed(1)}" y2="${yS.toFixed(1)}" style="stroke:var(--agua)" stroke-width="0.9" opacity="0.55"/>`;
+    }
+    // Nubes: grupos de tres círculos, más oscuros con tormentas más raras
+    const gris = `color-mix(in srgb, var(--tinta-2) ${Math.round(oscura * 100)}%, var(--panel))`;
+    const nNubes = Math.max(1, Math.round((xb - xa) / 46));
+    for (let k = 0; k < nNubes; k++) {
+      const cx = xa + ((k + 0.5) * (xb - xa)) / nNubes;
+      const cy = 26 + (k % 2) * 3;
+      svg += `<g style="fill:${gris}"><circle cx="${(cx - 11).toFixed(1)}" cy="${cy + 3}" r="7"/><circle cx="${cx.toFixed(1)}" cy="${cy - 1}" r="10"/><circle cx="${(cx + 12).toFixed(1)}" cy="${cy + 3}" r="7.5"/><rect x="${(cx - 11).toFixed(1)}" y="${cy + 3}" width="23" height="7.5"/></g>`;
+    }
+    svg += `<text x="${((xa + xb) / 2).toFixed(1)}" y="50" text-anchor="middle" class="t-chica t-sel t-halo">tormenta de ${t.T} años: ${fmt(t.I, 0)} mm/h durante ${fmtTiempo(t.D * 60)}</text>`;
+  } else {
+    svg += `<text x="${X(25)}" y="34" text-anchor="middle" class="t-chica t-halo">sin tormenta · ${fmt(l.P30, 0)} mm de lluvia en los últimos 30 días</text>`;
+  }
+  // Terreno y río
+  const pts = [];
+  for (let km = 0; km <= 50 + 1e-9; km += 0.5) pts.push(`${X(km).toFixed(1)},${Y(cotaCauce(km)).toFixed(1)}`);
+  const seco = l.climaId === 'nino';
+  svg += `<path d="M${X(0)},${yBase} L${pts.join(' L')} L${X(50)},${yBase} Z" fill="${seco ? 'var(--ocre)' : 'var(--ok)'}" opacity="${seco ? 0.34 : 0.22}"/>`;
+  svg += `<polyline points="${pts.join(' ')}" fill="none" style="stroke:var(--agua)" stroke-width="${l.capta ? 2.6 : 1.2}"/>`;
+  if (l.vega > 0) svg += `<rect x="${X(46)}" y="${Y(cotaCauce(48)) - 5}" width="${X(50) - X(46)}" height="7" fill="var(--agua)" opacity="0.6"/>`;
+  for (let km = 0; km <= 50; km += 10) {
+    svg += `<text x="${X(km)}" y="${yBase + 13}" text-anchor="${km === 0 ? 'start' : (km === 50 ? 'end' : 'middle')}" class="t-chica">${km === 0 ? 'km 0' : km}</text>`;
+  }
+  // Marcas numeradas de las amenazas
+  lista.forEach((a, k) => {
+    const x = X(a.km);
+    const y = Y(cotaCauce(a.km)) - 13;
+    svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="7.5" style="fill:${COLOR_NIVEL[a.nivel]};stroke:var(--panel)" stroke-width="1.5"/>`;
+    svg += `<text x="${x.toFixed(1)}" y="${(y + 3.3).toFixed(1)}" text-anchor="middle" style="fill:var(--panel);font-size:9.5px;font-weight:700;font-family:var(--ui)">${k + 1}</text>`;
+  });
+  svg += '</svg>';
+  const items = lista.map((a, k) => `<li data-nivel="${a.nivel}"><span class="num-amenaza">${k + 1}</span><span><b>${a.nombre}:</b> ${a.texto}</span></li>`).join('');
+  const banda = `<p class="alerta-lluvia" data-nivel="${NIVEL_ALERTA[l.alerta]}"><b>${NOMBRE_ALERTA[l.alerta]}</b>${l.motivos.length ? `: ${l.motivos.join(', ')}` : ': sin amenazas'}</p>`;
+  return {
+    svg: banda + svg + `<ol class="lista-amenazas">${items}</ol>`,
+    leyenda: 'Perfil de la cuenca de la montaña al mar (alturas exageradas). Cada número es un lugar donde la lluvia puede causar un desastre; su color es el estado de ahora: verde sin peligro, ocre cerca del umbral, rojo cuando ocurre y gris si la tormenta no cae ahí.',
+  };
+}
+
 const PINTORES = {
+  lluvia() {
+    const l = r.lluvia;
+    const t = l.t;
+    const c = l.c;
+    const ano = l.ano;
+    const q = l.avenida;
+    const canal = r.canal;
+    const uso = p.Qcrecida / canal.Qcap;
+    // Lo que sube el río por la tormenta
+    const cotaSinTormenta = R.cotaDeCaudal(L.caudalDeLluvia(l.P30, { fSub: l.fSub }));
+    const nivelDesl = !l.desl.enLaderas ? '' : (l.desl.nivel === 'alto' ? 'alerta' : (l.desl.nivel === 'medio' ? 'aviso' : 'ok'));
+    // Los tres climas: lo que cambia en el resto del sistema
+    const baseRiego = { zona: p.zonaRiego, cultivo: p.cultivo, metodo: p.metodoRiego, area: p.areaRiego, horas: p.horasRiego };
+    const nbDis = G.necesidadRiego({ ...baseRiego, epoca: 'seca' }).Nb;
+    const climas = Object.keys(L.CLIMAS).map((id) => {
+      const fL = L.clima(id).fLluvia;
+      const horas = (epoca) => (nbDis > 0 ? (p.horasRiego * G.necesidadRiego({ ...baseRiego, epoca, fLluvia: fL }).Nb) / nbDis : 0);
+      return {
+        id, a: id === l.climaId ? ano : L.anoClima(id, H.COTA_VEGA),
+        Eano: id === l.climaId ? r.anoRepresa.Eano : P.simularAno({ ...p, climaAno: id }, r.represa.nivel).Eano,
+        horasSeca: horas('seca'), horasLluvias: horas('lluviosa'),
+        hh: H.huellaHidrica(p.cultivo, p.zonaRiego, { fN: p.dosisN / 100, fLluvia: fL }),
+      };
+    });
+    const marcarClima = Object.keys(L.CLIMAS).indexOf(l.climaId) + 1;
+    const meses = (lista) => (lista.length ? L.listaMeses(lista) : 'ninguno');
+    const mesesCortos = (lista) => (lista.length ? L.listaMeses(lista, true) : 'ninguno');
+    const tablaAno = tablaHTML(`El río mes a mes (${c.corto})`, ['Mes', 'Ciudad', 'Cuenca', 'Caudal', 'Cota', 'Río'], [
+      ...ano.meses.map((m, k) => ({
+        clase: k === p.mesAno ? 'elegida' : '',
+        celdas: [m.mes, fmt(m.Pciudad, 0), fmt(m.P30, 0), fmt(m.Q), fmt(m.cota),
+          !m.capta ? { v: '✗ sin agua', clase: 'mal' } : (m.vega > 0 ? { v: '✗ inunda', clase: 'mal' } : { v: '✓', clase: 'bien' })],
+      })),
+      { clase: 'total', celdas: ['Año', fmt(ano.lluviaCiudad, 0), fmt(ano.lluviaCuenca, 0), fmt(ano.meses.reduce((s, m) => s + m.Q, 0) / 12), '', ''] },
+    ], { numericas: [1, 2, 3, 4], nota: `Lluvia en mm: la de la ciudad es la media de cada mes en Santa Marta (1991–2020); la de la cuenca, la de 30 días que explica el caudal del río (m³/s) a mitad del mes. Cota del río en la bocatoma en m: sin agua si baja de ${fmt(R.COTA_MIN_CAPTACION)} m (la rejilla); inunda si pasa de ${fmt(H.COTA_VEGA)} m (la vega del lote).` });
+    const tablaClimas = tablaHTML('Lo que cambia con El Niño y La Niña', ['', 'Normal', 'El Niño', 'La Niña'], [
+      ['Lluvia en la cuenca (mm/año)', ...climas.map((x) => R.miles(x.a.lluviaCuenca))],
+      ['Lluvia en la ciudad (mm/año)', ...climas.map((x) => R.miles(x.a.lluviaCiudad))],
+      ['Meses sin captar', ...climas.map((x) => ({ v: mesesCortos(x.a.sinCaptar), clase: x.a.sinCaptar.length ? 'mal' : '' }))],
+      ['Meses con el río en la vega', ...climas.map((x) => ({ v: mesesCortos(x.a.conVega), clase: x.a.conVega.length > 2 ? 'mal' : '' }))],
+      ['Recarga del acuífero (mm/año)', ...climas.map((x) => fmt(x.a.recarga, 0))],
+      ['Energía de la represa (MWh/año)', ...climas.map((x) => R.miles(x.Eano / 1000))],
+      ['Riego en la época seca (h/día)', ...climas.map((x) => fmt(x.horasSeca, 1))],
+      ['Riego en la época de lluvias (h/día)', ...climas.map((x) => fmt(x.horasLluvias, 1))],
+      ['Huella verde (m³/t)', ...climas.map((x) => R.miles(x.hh.verde))],
+      ['Huella azul (m³/t)', ...climas.map((x) => R.miles(x.hh.azul))],
+    ], { numericas: [1, 2, 3], marcar: marcarClima, nota: `Con la misma operación de la represa y el mismo cultivo (${G.CULTIVOS[p.cultivo].nombre.toLowerCase()} en la ${R.ZONAS[p.zonaRiego].nombre.toLowerCase()}). El cultivo evapotranspira lo mismo: con El Niño la lluvia cubre menos y el riego, más (la huella total no cambia, cambia su color).` });
+    const DUR = [15, 30, 60, 180, 360, 1440];
+    const tablaIDF = tablaHTML(`Intensidad de la lluvia en mm/h (M = ${fmt(p.lluviaM, 0)} mm)`, ['T (años)', 'P₂₄ (mm)', ...DUR.map((D) => (D < 60 ? `${D} min` : `${D / 60} h`))], L.PERIODOS.map((T) => ({
+      clase: T === p.tormentaT ? 'elegida' : '',
+      celdas: [String(T), fmt(L.lluvia24(T, p.lluviaM), 1), ...DUR.map((D) => fmt(L.intensidad(T, D, p.lluviaM), 1))],
+    })), { numericas: [1, 2, 3, 4, 5, 6, 7], nota: 'Curva intensidad–duración–frecuencia: intensidad media de la lluvia según su duración y su período de retorno T. P₂₄ es la lluvia de 24 h del mismo período (Gumbel); las duraciones cortas salen de ella con la regla de Dyck y Peschke.' });
+    const estado = (bien, texto) => ({ v: `${bien ? '✓' : '✗'} ${texto}`, clase: bien ? 'bien' : 'mal' });
+    const tablaDesastres = tablaHTML('Desastres: qué los dispara y cómo están ahora', ['Amenaza', 'Ocurre cuando', 'Ahora'], [
+      ['Creciente del río', `el río pasa la cota ${fmt(H.COTA_VEGA)} m de la vega`, estado(l.vega <= 0, `cota ${fmt(l.cotaEf)} m`)],
+      ['Desborde del arroyo', `la crecida pasa la capacidad del canal (${fmt(canal.Qcap)} m³/s)`, estado(uso <= 1, `${fmt(p.Qcrecida)} m³/s`)],
+      ['Deslizamientos', `la lluvia pasa el umbral (${fmt(l.desl.Iu, 1)} mm/h en ${fmtTiempo(t.D * 60)})`, l.desl.enLaderas ? estado(l.desl.nivel !== 'alto', `${fmt(t.I, 1)} mm/h`) : 'sin tormenta en las laderas'],
+      ['Avenida torrencial', 'llueve en la montaña sobre el umbral y la quebrada es empinada (Melton ≥ 0.3)', q.llueve ? estado(!q.probable, q.probable ? `${fmt(q.Qlodo, 0)} m³/s con lodo` : 'sin avenida') : 'sin tormenta en la montaña'],
+      ['Sequía', `el río baja de la cota ${fmt(R.COTA_MIN_CAPTACION)} m de la rejilla`, estado(l.capta, l.capta ? 'capta' : 'sin agua')],
+    ], { nota: 'Umbrales de referencia del modelo: la vega y la rejilla son las del simulador; el de deslizamientos es el de Larsen y Simon (1993) para el trópico húmedo; el de la quebrada, el índice de Melton (Wilford y otros, 2004).' });
+    const sinT = !t.activa;
+    return {
+      figura: amenazasSVG(),
+      metricas: metricas([
+        ['<b>Alerta</b>', '', ''],
+        ['Nivel de alerta', `${NOMBRE_ALERTA[l.alerta]}${l.motivos.length ? `: ${l.motivos.join(', ')}` : ': sin amenazas'}`, '', NIVEL_ALERTA[l.alerta]],
+        ['<b>Lluvia y río</b>', '', ''],
+        ['Clima del año', c.nombre, ''],
+        ['Lluvia del año en la cuenca', ano.lluviaCuenca, 'mm', '', 0],
+        ['Lluvia del año en la ciudad', ano.lluviaCiudad, 'mm', '', 0],
+        ['Lluvia de los últimos 30 días P<sub>30</sub>', l.P30, 'mm', '', 1],
+        ['Agua subterránea que alimenta al río', l.fSub * l.Qsub, 'm³/s', l.fSub < 1 ? 'aviso' : '', 3],
+        ['Caudal del río en la bocatoma sin la represa', l.Qboc, 'm³/s', '', 3],
+        ['Cota del río con la represa', l.cotaEf, 'm.s.n.m.', !l.capta || l.vega > 0 ? 'alerta' : ''],
+        ['Sedimento en suspensión', p.sedimento, 'mg/L', '', 0],
+        ['<b>Tormenta de hoy</b>', '', ''],
+        ...(sinT ? [['Tormenta', 'sin tormenta', '']] : [
+          ['Período de retorno', `${t.T} años`, ''],
+          ['Probabilidad de que llegue en un año', 100 / t.T, '%', '', 0],
+          ['Dónde cae', t.z.nombre, ''],
+          ['Duración', t.D, 'min', '', 0],
+          ['Lluvia', t.P, 'mm', '', 1],
+          ['Intensidad media', t.I, 'mm/h', '', 1],
+          ['Lluvia repartida en la cuenca del río', t.Pcuenca, 'mm', '', 1],
+          ['Lo que sube el río en la bocatoma', p.cotaRio - cotaSinTormenta, 'm', '', 2],
+        ]),
+        ['<b>Arroyo de la ciudad (método racional)</b>', '', ''],
+        ['Tiempo de concentración (Kirpich)', L.ARROYO.tc, 'min', '', 1],
+        ['Área de la cuenca urbana', L.ARROYO.area, 'km²', '', 3],
+        ['Intensidad en el tiempo de concentración', l.arroyo.i, 'mm/h', '', 1],
+        ['Crecida de la tormenta', l.arroyo.activa ? l.arroyo.Q : 'no llueve sobre la ciudad', l.arroyo.activa ? 'm³/s' : '', l.desborde ? 'alerta' : ''],
+        ['Caudal que lleva el canal', p.Qcrecida, 'm³/s'],
+        ['Capacidad del canal', canal.Qcap, 'm³/s'],
+        ['Uso del canal', 100 * uso, '%', uso > 1 ? 'alerta' : (uso > 0.85 ? 'aviso' : 'ok'), 0],
+        ['<b>Laderas: deslizamientos</b>', '', ''],
+        ['Umbral de Larsen y Simon para esta duración', l.desl.Iu0, 'mm/h', '', 1],
+        ['Factor por la lluvia de los 30 días anteriores', l.desl.fAnt, '', '', 2],
+        ['Umbral con el suelo de hoy', l.desl.Iu, 'mm/h', '', 1],
+        ['Lluvia frente al umbral', l.desl.enLaderas ? 100 * l.desl.r : 'sin tormenta en las laderas', l.desl.enLaderas ? '%' : '', nivelDesl, 0],
+        ['<b>Quebrada de montaña: avenida torrencial</b>', '', ''],
+        ['Índice de Melton R = H/√A', L.QUEBRADA.melton, '', '', 2],
+        ['Lo que puede bajar', q.tipo, ''],
+        ['Caudal de agua (método racional)', q.llueve ? q.Qagua : 'no llueve en la montaña', q.llueve ? 'm³/s' : '', '', 1],
+        ['Caudal con lodo, rocas y troncos', q.llueve ? q.Qlodo : '—', q.llueve ? 'm³/s' : '', q.probable ? 'alerta' : '', 1],
+        ['Avenida torrencial', q.probable ? 'probable: hay que evacuar las orillas' : 'no se espera', '', q.probable ? 'alerta' : 'ok'],
+        ['Tiempo para avisar hasta la bocatoma', q.tLlegada, 'h', '', 1],
+        ['<b>Sequía y el año</b>', '', ''],
+        ['Meses sin captar en la bocatoma', meses(ano.sinCaptar), '', ano.sinCaptar.length ? 'alerta' : 'ok'],
+        ['Meses con el río en la vega', meses(ano.conVega), '', ano.conVega.length > 2 ? 'aviso' : ''],
+        ['Recarga del acuífero en el año', ano.recarga, 'mm', '', 1],
+        ['Energía de la represa en el año', r.anoRepresa.Eano / 1000, 'MWh', '', 1],
+        ['Horas de riego al día ahora', r.riego.horasAct, 'h', r.riego.horasAct > 24 ? 'alerta' : '', 1],
+      ]),
+      revision: l.checks,
+      tablas: tablaAno + tablaClimas + tablaIDF + tablaDesastres,
+      ecuacion: [
+        ecu.tipo('Función lineal: la lluvia de 30 días fija el caudal del río'),
+        ecu.formula(`${i('Q')} = ${i('f')}<sub>sub</sub>·${i('Q')}<sub>sub</sub> + ${i('K')}·(${i('P')}<sub>30</sub> + ${i('a')}·${i('P')}<sub>t</sub>),  ${i('K')} = ${i('c')}·${i('A')}/2592`),
+        ecu.sust(`${i('K')} = ${fmt(L.CUENCA.coef)} × ${R.miles(L.CUENCA.area)} / 2592 = ${fmt(L.K30, 4)} m³/s por mm;  ${i('Q')} = ${fmt(l.fSub, 2)} × ${fmt(l.Qsub, 3)} + ${fmt(L.K30, 4)} × (${fmt(l.P30, 1)} + ${fmt(t.Pcuenca, 1)}) = ${fmt(l.Qboc, 3)} m³/s`),
+        ecu.nota(`${i('c')}: parte de la lluvia que llega al río; ${i('A')}: área de la cuenca hasta la bocatoma (km²); 2 592 = segundos de 30 días / 1 000. ${i('Q')}<sub>sub</sub>: el río que deja el agua subterránea cuando no llueve; con El Niño baja (${i('f')}<sub>sub</sub> = ${L.CLIMAS.nino.fSub}) y con La Niña sube (${L.CLIMAS.nina.fSub}).`),
+        ecu.tipo('Función logarítmica: lluvia máxima de un período de retorno (Gumbel)'),
+        ecu.formula(`${i('P')}<sub>24</sub> = ${i('M')}·(1 + ${i('c')}<sub>v</sub>·${i('K')}<sub>T</sub>),  ${i('K')}<sub>T</sub> = −(√6/π)·(0.5772 + ln ln(${i('T')}/(${i('T')} − 1)))`),
+        ...(sinT ? [ecu.sust(`Para ${i('T')} = 10 años: ${i('K')}<sub>T</sub> = ${fmt(L.kGumbel(10), 3)};  ${i('P')}<sub>24</sub> = ${fmt(p.lluviaM, 0)} × (1 + ${fmt(L.IDF.cv, 2)} × ${fmt(L.kGumbel(10), 3)}) = ${fmt(L.lluvia24(10, p.lluviaM), 1)} mm`)]
+          : [ecu.sust(`${i('K')}<sub>T</sub> = ${fmt(L.kGumbel(t.T), 3)};  ${i('P')}<sub>24</sub> = ${fmt(p.lluviaM, 0)} × (1 + ${fmt(L.IDF.cv, 2)} × ${fmt(L.kGumbel(t.T), 3)}) = ${fmt(t.P24, 1)} mm`)]),
+        ecu.tipo('Función potencia: lluvias cortas (Dyck y Peschke) e intensidad'),
+        ecu.formula(`${i('P')}(${i('D')}) = ${i('P')}<sub>24</sub>·(${i('D')}/1440)<sup>0.25</sup>,  ${i('I')} = ${i('P')}/(${i('D')}/60)`),
+        ...(sinT ? [] : [ecu.sust(`${i('P')} = ${fmt(t.P24, 1)} × (${fmt(t.D, 0)}/1440)<sup>0.25</sup> = ${fmt(t.P, 1)} mm;  ${i('I')} = ${fmt(t.P, 1)} / ${fmt(t.D / 60, 2)} = ${fmt(t.I, 1)} mm/h`)]),
+        ecu.tipo('Función lineal: crecida del arroyo (método racional) y tiempo de concentración (Kirpich)'),
+        ecu.formula(`${i('Q')} = ${i('C')}·${i('i')}·${i('A')}/3.6,  ${i('t')}<sub>c</sub> = 0.0195·${i('L')}<sup>0.77</sup>·${i('S')}<sup>−0.385</sup>`),
+        ecu.sust(`${i('t')}<sub>c</sub> = 0.0195 × ${R.miles(L.ARROYO.L)}<sup>0.77</sup> × ${L.ARROYO.S}<sup>−0.385</sup> = ${fmt(L.ARROYO.tc, 1)} min${l.arroyo.activa ? `;  ${i('Q')} = ${L.ARROYO.C} × ${fmt(l.arroyo.i, 1)} × ${fmt(L.ARROYO.area, 3)} / 3.6 = ${fmt(l.arroyo.Q)} m³/s` : ''}`),
+        ecu.nota(`El área de la cuenca urbana (${fmt(L.ARROYO.area, 3)} km²) es la que da la crecida de diseño del canal (${fmt(L.ARROYO.Qdiseno)} m³/s) con la tormenta de ${L.ARROYO.Tdiseno} años.`),
+        ecu.tipo('Función potencia decreciente: umbral de deslizamientos (Larsen y Simon, 1993)'),
+        ecu.formula(`${i('I')}<sub>u</sub> = 91.46·${i('D')}<sup>−0.82</sup>·${i('f')}<sub>ant</sub>  (${i('D')} en horas),  ${i('f')}<sub>ant</sub> = 1 − 0.4·(${i('P')}<sub>30</sub> − 75)/175  (entre 0.6 y 1.15)`),
+        ecu.sust(`${i('I')}<sub>u</sub> = 91.46 × ${fmt(l.desl.Dh, 2)}<sup>−0.82</sup> × ${fmt(l.desl.fAnt, 2)} = ${fmt(l.desl.Iu, 1)} mm/h${l.desl.enLaderas ? `;  ${i('I')}/${i('I')}<sub>u</sub> = ${fmt(t.I, 1)} / ${fmt(l.desl.Iu, 1)} = ${fmt(l.desl.r, 2)}` : ''}`),
+        ecu.tipo('Función raíz y racional: avenida torrencial'),
+        ecu.formula(`${i('R')} = ${i('H')}/√${i('A')},  ${i('Q')}<sub>lodo</sub> = ${i('Q')}<sub>agua</sub>/(1 − ${i('C')}<sub>v</sub>),  ${i('t')} = ${i('L')}/${i('v')}`),
+        ecu.sust(`${i('R')} = ${fmt(L.QUEBRADA.relieve, 2)} / √${fmt(L.QUEBRADA.area, 1)} = ${fmt(L.QUEBRADA.melton, 2)} (${q.tipo});  ${i('Q')}<sub>lodo</sub> = ${fmt(q.Qagua, 1)} / (1 − ${fmt(q.Cv, 2)}) = ${fmt(q.Qlodo, 1)} m³/s;  ${i('t')} = ${R.miles((R.KM_BOCATOMA - L.QUEBRADA.km) * 1000)} m / ${L.VELOCIDAD_AVENIDA} m/s = ${fmt(q.tLlegada, 1)} h`),
+        ecu.nota('Fuentes: lluvia media de Santa Marta 1991–2020 (Climates to Travel); efecto de El Niño de 2015 y de La Niña de 2010–2011 en las lluvias del Caribe (IDEAM); umbral de deslizamientos de Larsen y Simon (1993) para Puerto Rico; índice de Melton para flujos de detritos (Wilford y otros, 2004). La curva IDF usa valores de referencia (M = 75 mm, c<sub>v</sub> = 0.40) que se reemplazan por los de la estación del IDEAM; el factor de la lluvia de los días anteriores y la velocidad de la avenida son supuestos del modelo.'),
+      ].join(''),
+      leyenda: 'Curvas intensidad–duración–frecuencia frente al umbral de deslizamientos, en escalas logarítmicas (las funciones potencia se ven como rectas): si la tormenta queda por encima de la línea punteada, se esperan deslizamientos en las laderas donde cae.',
+      grafica(g) {
+        const cc = paleta();
+        const lg = Math.log10;
+        // Duraciones de 15 min a 24 h (en horas), en escala logarítmica
+        const Ds = Array.from({ length: 60 }, (_, k) => 0.25 * 96 ** (k / 59));
+        const Ts = [...new Set([2, 10, 100, ...(t.activa ? [t.T] : [])])].sort((a, b) => a - b);
+        const colores = [cc.ok, cc.ocre, cc.alerta, cc.piezo];
+        actualizarGrafica(g, [
+          ...Ts.map((T, k) => serieLinea(`${T} años`, Ds.map((D) => ({ x: lg(D), y: lg(L.intensidad(T, D * 60, p.lluviaM)) })), T === t.T ? cc.agua : colores[k % colores.length], { ancho: T === t.T ? 2.5 : 1.5 })),
+          serieLinea('Umbral de deslizamientos', Ds.map((D) => ({ x: lg(D), y: lg(L.umbralDeslizamiento(D) * l.desl.fAnt) })), cc.tinta, { punteada: true, ancho: 2 }),
+          ...(t.activa ? [seriePuntos('Tormenta de hoy', [{ x: lg(t.D / 60), y: lg(t.I) }], l.desl.r >= 1 && l.desl.enLaderas ? cc.alerta : cc.agua)] : []),
+        ], { x: { min: lg(0.25), max: lg(24) }, y: { min: 0, max: lg(500) } });
+      },
+      ejes: {
+        xTitulo: 'Duración de la lluvia', yTitulo: 'Intensidad media (mm/h)',
+        marcasX: [0.25, 0.5, 1, 2, 3, 6, 12, 24].map(Math.log10), marcasY: [1, 2, 5, 10, 20, 50, 100, 200, 500].map(Math.log10),
+        formatoX: (v) => { const h = 10 ** v; return h < 1 ? `${fmt(h * 60, 0)} min` : `${fmt(h, 0)} h`; },
+        formatoY: (v) => fmt(10 ** v, 0),
+      },
+      extra: {
+        leyenda: `El río mes a mes con los tres climas: por debajo de la línea de la rejilla (${fmt(R.COTA_MIN_CAPTACION)} m) la bocatoma no capta; por encima de la vega (${fmt(H.COTA_VEGA)} m) el río inunda el cultivo de la llanura.`,
+        grafica(g) {
+          const cc = paleta();
+          const serie = (id) => L.anoClima(id, H.COTA_VEGA).meses.map((m, k) => ({ x: k + 1, y: m.cota }));
+          const color = { normal: cc.agua, nino: cc.ocre, nina: cc.ok };
+          actualizarGrafica(g, [
+            ...Object.keys(L.CLIMAS).map((id) => serieLinea(L.CLIMAS[id].nombre, serie(id), color[id], { ancho: id === l.climaId ? 3 : 1.5 })),
+            serieLinea('Rejilla de la bocatoma', [{ x: 1, y: R.COTA_MIN_CAPTACION }, { x: 12, y: R.COTA_MIN_CAPTACION }], cc.alerta, { punteada: true, ancho: 1.2 }),
+            serieLinea('Vega del lote', [{ x: 1, y: H.COTA_VEGA }, { x: 12, y: H.COTA_VEGA }], cc.tinta2, { punteada: true, ancho: 1.2 }),
+            ...(p.mesAno >= 0 ? [seriePuntos('Mes elegido', [{ x: p.mesAno + 1, y: ano.meses[p.mesAno].cota }], cc.alerta)] : []),
+          ], { x: { min: 1, max: 12, paso: 1 }, y: { min: 1.4, max: 4 } });
+        },
+        ejes: { xTitulo: 'Mes', yTitulo: 'Cota del río (m)', formatoX: (v) => L.MESES[Math.round(v) - 1]?.nombre ?? '', formatoY: (v) => fmt(v, 1) },
+      },
+    };
+  },
+
   captacion() {
     const desnivel = p.cotaTanque + sim.nivel - cotaEf();
     const c = r.costo;
@@ -2558,7 +2919,7 @@ function crearFichaDatos(t, f) {
     <div class="acciones exportar">
       <button type="button" class="boton primario" data-accion="excel">Descargar Excel (.xlsx)</button>
     </div>
-    <p class="nota-datos" data-rol="estado-excel" aria-live="polite">El libro trae doce hojas: resumen, parámetros y resultados, serie de tiempo, arranques y paradas, ciclo y costo con fórmulas, revisión del diseño, cantidades de obra, perfil de calidad del río, represa y energía con fórmulas, el embalse mes a mes, la huella hídrica con fórmulas y la huella por cultivo.</p>
+    <p class="nota-datos" data-rol="estado-excel" aria-live="polite">El libro trae catorce hojas: resumen, parámetros y resultados, serie de tiempo, arranques y paradas, ciclo y costo con fórmulas, revisión del diseño, cantidades de obra, perfil de calidad del río, represa y energía con fórmulas, el embalse mes a mes, la huella hídrica con fórmulas, la huella por cultivo, la lluvia y los desastres con fórmulas, y la lluvia mes a mes.</p>
     <h3>Registro de la simulación</h3>
     <div class="control">
       <label for="c-intervalo">Registrar una fila cada</label>
@@ -2734,6 +3095,16 @@ const CONSTANTES = [
   ['alfaN', 'Fracción del nitrógeno que se lava α', '', 2, () => H.ALFA_N],
   ['cmaxN', 'Concentración máxima de nitratos (como N)', 'mg/L', 1, () => H.CMAX_N],
   ['factorACPM', 'Factor de emisión del ACPM', 'kg CO₂/L', 2, () => H.FACTOR_ACPM],
+  ['areaCuenca', 'Área de la cuenca hasta la bocatoma', 'km²', 0, () => L.CUENCA.area],
+  ['coefCuenca', 'Coeficiente de escorrentía de la cuenca', '', 2, () => L.CUENCA.coef],
+  ['K30', 'Caudal por cada mm de lluvia en 30 días K', 'm³/s por mm', 4, () => L.K30],
+  ['Qsub', 'Río que deja el agua subterránea en un año normal', 'm³/s', 3, () => L.Q_SUB],
+  ['cvIDF', 'Coeficiente de variación de la lluvia máxima diaria', '', 2, () => L.IDF.cv],
+  ['Carroyo', 'Coeficiente de escorrentía del arroyo', '', 2, () => L.ARROYO.C],
+  ['Aarroyo', 'Área de la cuenca del arroyo', 'km²', 3, () => L.ARROYO.area],
+  ['Aquebrada', 'Área de la quebrada de montaña', 'km²', 1, () => L.QUEBRADA.area],
+  ['melton', 'Índice de Melton de la quebrada', '', 2, () => L.QUEBRADA.melton],
+  ['vAvenida', 'Velocidad de la onda de la avenida', 'm/s', 1, () => L.VELOCIDAD_AVENIDA],
   ['rho', 'Densidad del agua ρ (25 °C)', 'kg/m³', 2, () => M.RHO],
   ['mu', 'Viscosidad del agua μ (25 °C)', 'Pa·s', 5, () => M.MU],
   ['g', 'Gravedad g', 'm/s²', 2, () => M.G],
@@ -2861,6 +3232,8 @@ async function exportarExcel(boton) {
         ['Huella hídrica del cultivo', `${R.miles(r.huella.hh.total)} m³/t (verde ${R.miles(r.huella.hh.verde)}, azul ${R.miles(r.huella.hh.azul)}, gris ${R.miles(r.huella.hh.gris)})`],
         ['CO₂ de llevar la cosecha a la ciudad', r.huella.carbono.kgCO2, 'kg al año', 0],
         ['Cosecha perdida por inundación', 100 * r.huella.perdida, '%', 1],
+        ['Lluvia', `${r.lluvia.c.nombre}; ${fmt(r.lluvia.P30, 0)} mm en los últimos 30 días; ${r.lluvia.t.activa ? `tormenta de ${r.lluvia.t.T} años, ${fmt(r.lluvia.t.D, 0)} min, en: ${r.lluvia.t.z.nombre.toLowerCase()}` : 'sin tormenta'}`],
+        ['Nivel de alerta', `${NOMBRE_ALERTA[r.lluvia.alerta]}${r.lluvia.motivos.length ? `: ${r.lluvia.motivos.join(', ')}` : ''}`],
       ],
       actual: instantanea('Al exportar'),
       registro,
@@ -2879,6 +3252,8 @@ async function exportarExcel(boton) {
       ano: libroAno(p, r),
       huella: libroHuella(p, r),
       cultivos: libroCultivos(p, r),
+      lluvia: libroLluvia(p, r),
+      lluviaMeses: libroLluviaMeses(p, r),
       perfil: {
         puntos: cal.puntos.map((x) => ({ ...x, zonaNombre: R.ZONAS[x.zona].nombre.replace('Zona ', '') })),
         marcas: [
@@ -2985,8 +3360,16 @@ function pintarEstados() {
     if (span.textContent !== t) span.textContent = t;
     el.dataset.nivel = n;
   }
+  const llu = document.getElementById('estadoLluvia');
+  if (llu) {
+    const l = r.lluvia;
+    const tl = `${NOMBRE_ALERTA[l.alerta]}: ${l.motivos.length ? l.motivos.join(', ') : (l.t.activa ? `tormenta de ${l.t.T} años` : `${fmt(l.P30, 0)} mm de lluvia en 30 días`)}`;
+    const sp = llu.querySelector('.texto');
+    if (sp.textContent !== tl) sp.textContent = tl;
+    llu.dataset.nivel = NIVEL_ALERTA[l.alerta];
+  }
   const hayAlerta = (lista) => lista.some((x) => x.nivel === 'alerta');
-  const alertas = { vivienda: r.estado !== 'normal' || r.casa.cerrada, tanque: r.vacio, arroyo: c.desborde,
+  const alertas = { lluvia: r.lluvia.alerta === 'roja', vivienda: r.estado !== 'normal' || r.casa.cerrada, tanque: r.vacio, arroyo: c.desborde,
     rio: hayAlerta(r.rio.checks), captacion: !r.capta,
     bombas: hayAlerta(r.bombas.checksA) || hayAlerta(r.bombas.checksR), riego: hayAlerta(r.riego.checks),
     acuifero: hayAlerta(r.acuifero.checks), represa: hayAlerta(r.represa.checks), huella: hayAlerta(r.huella.checks),

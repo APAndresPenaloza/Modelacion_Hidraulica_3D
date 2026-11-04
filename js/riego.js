@@ -12,6 +12,7 @@ import * as M from './modelo.js';
 import * as D from './diseno.js';
 import * as R from './rio.js';
 import * as B from './bombas.js';
+import * as L from './lluvia.js';
 
 /** Radiación extraterrestre media anual a 11° N, expresada como lámina evaporable [mm/día]. */
 export const RA = 14.7;
@@ -60,19 +61,22 @@ export function et0Hargreaves(Tmed, dT, Ra = RA) {
   return 0.0023 * (Tmed + 17.8) * Math.sqrt(Math.max(0, dT)) * Ra;
 }
 
-/** Clima de una zona en una época: en lluvias el cielo nublado reduce ΔT en 2 °C. */
-export function climaZona(zona, epoca) {
+/**
+ * Clima de una zona en una época: en lluvias el cielo nublado reduce ΔT en 2 °C.
+ * fLluvia: lluvia del año frente a un año normal (El Niño 0.6, La Niña 1.5; lluvia.js).
+ */
+export function climaZona(zona, epoca, fLluvia = 1) {
   const z = R.ZONAS[zona] ?? R.ZONAS.baja;
   const lluviosa = epoca === 'lluviosa';
   const dT = lluviosa ? z.dT - 2 : z.dT;
-  return { z, Tmed: z.Tmed, dT, ET0: et0Hargreaves(z.Tmed, dT), Pe: z.lluvia[lluviosa ? 'lluviosa' : 'seca'] };
+  return { z, Tmed: z.Tmed, dT, ET0: et0Hargreaves(z.Tmed, dT), Pe: z.lluvia[lluviosa ? 'lluviosa' : 'seca'] * fLluvia, fLluvia };
 }
 
 /** Necesidad de agua y caudal de riego de un cultivo. A en ha, horas de riego al día. */
-export function necesidadRiego({ zona, cultivo, metodo, area, horas, epoca = 'seca' }) {
+export function necesidadRiego({ zona, cultivo, metodo, area, horas, epoca = 'seca', fLluvia = 1 }) {
   const c = CULTIVOS[cultivo] ?? CULTIVOS.banano;
   const m = METODOS_RIEGO[metodo] ?? METODOS_RIEGO.goteo;
-  const cl = climaZona(zona, epoca);
+  const cl = climaZona(zona, epoca, fLluvia);
   const ETc = c.Kc * cl.ET0;
   const Nn = Math.max(0, ETc - cl.Pe);
   const Nb = Nn / m.Ea;
@@ -102,8 +106,10 @@ export function alturaRiego(zona, metodo, hf) {
  */
 export function calcularRiego(p, e, { agua, Qrio, ciudad }) {
   const base = { zona: p.zonaRiego, cultivo: p.cultivo, metodo: p.metodoRiego, area: p.areaRiego, horas: p.horasRiego };
+  // Se diseña con la época seca de un año normal; lo de ahora usa la época y el clima del año
+  const fLluvia = L.clima(p.climaAno).fLluvia;
   const dis = necesidadRiego({ ...base, epoca: 'seca' });
-  const act = p.epoca === 'lluviosa' ? necesidadRiego({ ...base, epoca: 'lluviosa' }) : dis;
+  const act = p.epoca === 'lluviosa' || fLluvia !== 1 ? necesidadRiego({ ...base, epoca: p.epoca, fLluvia }) : dis;
   const horasAct = dis.Nb > 0 ? (p.horasRiego * act.Nb) / dis.Nb : 0;
   const met = p.metodoPerdidas;
   const tubo = D.tramo(dis.Q, p.Lriego, e, met);

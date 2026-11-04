@@ -64,13 +64,16 @@ export const DIAS_ARROYO = 0.25;
 export const L_DESBORDE = 150;      // m de orilla del canal por donde se sale el agua
 
 // ── 1. Huella hídrica ──────────────────────────────────────────────────────
-/** Evapotranspiración del cultivo en un ciclo, separada en verde (lluvia) y azul (riego) [mm]. */
-export function aguaCiclo(cultivo, zona) {
+/**
+ * Evapotranspiración del cultivo en un ciclo, separada en verde (lluvia) y azul (riego) [mm].
+ * fLluvia: lluvia del año frente a un año normal (El Niño o La Niña).
+ */
+export function aguaCiclo(cultivo, zona, fLluvia = 1) {
   const c = G.CULTIVOS[cultivo] ?? G.CULTIVOS.banano;
   const d = DATOS_CULTIVO[cultivo] ?? DATOS_CULTIVO.banano;
   const out = { verde: 0, azul: 0, ETc: 0, dias: d.ciclo };
   for (const epoca of ['seca', 'lluviosa']) {
-    const cl = G.climaZona(zona, epoca);
+    const cl = G.climaZona(zona, epoca, fLluvia);
     const dias = (d.ciclo * DIAS_EPOCA[epoca]) / 365;
     const ETc = c.Kc * cl.ET0;
     out.verde += Math.min(ETc, cl.Pe) * dias;
@@ -84,9 +87,9 @@ export function aguaCiclo(cultivo, zona) {
  * Huella hídrica de un cultivo en una zona [m³/t].
  * fN: fracción de la dosis típica de nitrógeno; perdida: fracción de la cosecha perdida.
  */
-export function huellaHidrica(cultivo, zona, { fN = 1, perdida = 0 } = {}) {
+export function huellaHidrica(cultivo, zona, { fN = 1, perdida = 0, fLluvia = 1 } = {}) {
   const d = DATOS_CULTIVO[cultivo] ?? DATOS_CULTIVO.banano;
-  const agua = aguaCiclo(cultivo, zona);
+  const agua = aguaCiclo(cultivo, zona, fLluvia);
   const Y = d.rend * (1 - Math.min(0.999, Math.max(0, perdida)));
   const N = d.N * fN;
   const grisHa = (ALFA_N * N) / ((CMAX_N - CNAT_N) / 1000);          // m³/ha: kg ÷ (kg/m³)
@@ -140,9 +143,10 @@ export const perdidaTotal = (danoRio, danoArroyo) => 1 - (1 - danoRio) * (1 - da
 
 /**
  * Todo junto: la huella del cultivo elegido, las comparaciones y la inundación.
- * cotaRio: cota del río en la bocatoma (con la represa); excesoArroyo: m³/s que no caben en el canal.
+ * cotaRio: cota del río en la bocatoma (con la represa); excesoArroyo: m³/s que no caben en el canal;
+ * fLluvia: lluvia del año frente a un año normal (clima del año, lluvia.js).
  */
-export function calcularHuella(p, { cotaRio, excesoArroyo }) {
+export function calcularHuella(p, { cotaRio, excesoArroyo, fLluvia = 1 }) {
   const zona = p.zonaRiego;
   const cultivo = p.cultivo;
   const d = DATOS_CULTIVO[cultivo] ?? DATOS_CULTIVO.banano;
@@ -162,8 +166,8 @@ export function calcularHuella(p, { cotaRio, excesoArroyo }) {
     perdida: perdidaTotal(danoInundacion(cultivoBaja, bajaRio, p.diasInundacion), danoInundacion(cultivoBaja, bajaArroyo, DIAS_ARROYO)),
   };
   // Huella hídrica sin inundación y con la cosecha que queda
-  const hh = huellaHidrica(cultivo, zona, { fN });
-  const hhInund = huellaHidrica(cultivo, zona, { fN, perdida });
+  const hh = huellaHidrica(cultivo, zona, { fN, fLluvia });
+  const hhInund = huellaHidrica(cultivo, zona, { fN, perdida, fLluvia });
   const produccion = d.rend * p.areaRiego * d.ciclos * (1 - perdida);          // t al año
   const produccionSin = d.rend * p.areaRiego * d.ciclos;
   const aguaAno = {
@@ -174,12 +178,12 @@ export function calcularHuella(p, { cotaRio, excesoArroyo }) {
   const carbono = carbonoTransporte(zona, produccion, { capacidad: p.capacidadCamion, tarifa: p.impuestoCarbono });
   // Comparaciones: el cultivo en las tres zonas, y todos los cultivos en la zona elegida
   const porZona = ['alta', 'media', 'baja'].map((z) => {
-    const h = huellaHidrica(cultivo, z, { fN });
+    const h = huellaHidrica(cultivo, z, { fN, fLluvia });
     const T = d.rend * p.areaRiego * d.ciclos;
     return { zona: z, apto: G.cultivoApto(cultivo, z), hh: h, carbono: carbonoTransporte(z, T, { capacidad: p.capacidadCamion, tarifa: p.impuestoCarbono }) };
   });
   const porCultivo = Object.keys(DATOS_CULTIVO).map((id) => {
-    const h = huellaHidrica(id, zona, { fN });
+    const h = huellaHidrica(id, zona, { fN, fLluvia });
     const dc = DATOS_CULTIVO[id];
     const T = dc.rend * p.areaRiego * dc.ciclos;
     return {
@@ -201,7 +205,7 @@ export function calcularHuella(p, { cotaRio, excesoArroyo }) {
   R.revisar(checks, `Huella gris ${Math.round(hh.gris)} m³/t ≤ huella azul ${Math.round(hh.azul)} m³/t`, hh.gris <= Math.max(hh.azul, 1),
     'El nitrógeno que se lava ensucia más agua de la que el cultivo consume del riego: conviene ajustar la dosis o repartirla en más aplicaciones.', 'aviso');
   return {
-    zona, cultivo, d, fN, profRio, profArroyo, danoRio, danoArroyo, perdida, dias: p.diasInundacion, loteBaja,
+    zona, cultivo, d, fN, fLluvia, profRio, profArroyo, danoRio, danoArroyo, perdida, dias: p.diasInundacion, loteBaja,
     hh, hhInund, produccion, produccionSin, perdidaT: produccionSin - produccion, aguaAno, carbono, porZona, porCultivo, checks,
   };
 }

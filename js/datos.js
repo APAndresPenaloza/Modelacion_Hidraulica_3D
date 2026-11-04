@@ -4,7 +4,7 @@
  * Mientras corre el reloj se guarda una fila cada cierto tiempo simulado
  * (serie de tiempo) y cada vez que la bomba arranca o se apaga. Además se pueden
  * guardar escenarios (todos los parámetros y resultados de un momento) para
- * compararlos. Todo se descarga en un libro de Excel con doce hojas.
+ * compararlos. Todo se descarga en un libro de Excel con catorce hojas.
  * Este módulo no toca el DOM salvo en descargarArchivo().
  */
 import { crearXlsx, rangoTabla } from './excel.js';
@@ -12,6 +12,7 @@ import * as R from './rio.js';
 import * as G from './riego.js';
 import * as H from './huella.js';
 import * as P from './represa.js';
+import * as L from './lluvia.js';
 
 export const INTERVALOS = [
   { valor: 300, nombre: '5 min' },
@@ -607,6 +608,119 @@ function hojaHuellaCultivos(h) {
   };
 }
 
+/** Lluvia, tormenta y desastres, con fórmulas de Excel que reproducen el simulador. */
+function hojaLluvia(c) {
+  const e = (v, dec) => ({ v, dec, entrada: true });
+  // Mismas cuentas que las fórmulas, para guardar su valor en el archivo
+  const KT = c.T > 1 ? -(Math.sqrt(6) / Math.PI) * (0.5772 + Math.log(Math.log(c.T / (c.T - 1)))) : 0;
+  const P24 = c.T > 1 ? c.M * (1 + c.cv * KT) : 0;
+  const PD = P24 * (Math.min(c.D, 1440) / 1440) ** 0.25;
+  const I = c.D > 0 ? PD / (c.D / 60) : 0;
+  const K = (c.coef * c.area) / 2592;
+  const Pt = PD * c.fraccion;
+  const Q = c.fSub * c.Qsub + K * (c.P30 + Pt);
+  const enTc = (tc) => (c.D >= tc ? (P24 * (tc / 1440) ** 0.25) / (tc / 60) : PD / (tc / 60));
+  const tcA = 0.0195 * c.La ** 0.77 * c.Sa ** -0.385;
+  const iA = enTc(tcA);
+  const QA = (c.ciudad * c.Ca * iA * c.Aa) / 3.6;
+  const Iu0 = 91.46 * (c.D / 60) ** -0.82;
+  const fAnt = Math.min(1.15, Math.max(0.6, 1 - (0.4 * (c.P30 - 75)) / 175));
+  const rD = (c.laderas * 100 * I) / (Iu0 * fAnt);
+  const melton = c.Hq / Math.sqrt(c.Aq);
+  const tipo = melton > 0.6 ? 'flujo de detritos' : (melton >= 0.3 ? 'avenida de lodo' : 'crecida de agua');
+  const Cv = melton > 0.6 ? 0.45 : (melton >= 0.3 ? 0.25 : 0);
+  const tcQ = 0.0195 * c.Lq ** 0.77 * c.Sq ** -0.385;
+  const iQ = enTc(tcQ);
+  const Qagua = (c.montana * c.Cq * iQ * c.Aq) / 3.6;
+  const filas = [
+    [{ v: 'Lluvia, tormentas y desastres', estilo: 'titulo' }],
+    [nota('Los datos de entrada están en azul; lo demás se calcula con fórmulas. Si cambias la lluvia o la tormenta, Excel recalcula el río, el arroyo, las laderas y la quebrada.')],
+    [],
+    [enc('Variable'), enc('Valor'), enc('Unidad'), enc('Ecuación')],
+    [sec('Datos de entrada'), sec(''), sec(''), sec('')],
+    /* 6 */ ['Área de la cuenca hasta la bocatoma A', e(c.area, 0), 'km²', ''],
+    /* 7 */ ['Coeficiente de escorrentía de la cuenca c', e(c.coef, 2), '', 'parte de la lluvia que llega al río'],
+    /* 8 */ ['Río que deja el agua subterránea Q_sub', e(c.Qsub, 4), 'm³/s', 'año normal, cuando no llueve'],
+    /* 9 */ ['Factor del agua subterránea f_sub', e(c.fSub, 3), '', `${c.clima}: El Niño ${L.CLIMAS.nino.fSub}, La Niña ${L.CLIMAS.nina.fSub}`],
+    /* 10 */ ['Lluvia de los últimos 30 días P30', e(c.P30, 2), 'mm', 'la que explica el caudal del río de ahora'],
+    /* 11 */ ['Lluvia máxima diaria promedio M', e(c.M, 1), 'mm', 'valor de referencia: el de la estación del IDEAM'],
+    /* 12 */ ['Coeficiente de variación c_v', e(c.cv, 2), '', ''],
+    /* 13 */ ['Período de retorno de la tormenta T', e(c.T, 0), 'años', '0 = sin tormenta'],
+    /* 14 */ ['Duración de la tormenta D', e(c.D, 0), 'min', ''],
+    /* 15 */ ['Parte de la cuenca donde cae a', e(c.fraccion, 2), '', c.zona],
+    /* 16 */ ['¿Cae sobre la ciudad?', e(c.ciudad, 0), '', '1 = sí, 0 = no'],
+    /* 17 */ ['¿Cae sobre las laderas (zona alta o media)?', e(c.laderas, 0), '', '1 = sí, 0 = no'],
+    /* 18 */ ['¿Cae sobre la quebrada (zona alta)?', e(c.montana, 0), '', '1 = sí, 0 = no'],
+    /* 19 */ ['Coeficiente de escorrentía del arroyo C', e(c.Ca, 2), '', 'ciudad con calles y techos'],
+    /* 20 */ ['Área de la cuenca del arroyo', e(c.Aa, 4), 'km²', 'la que da la crecida de diseño con la tormenta de 2 años'],
+    /* 21 */ ['Longitud del arroyo L', e(c.La, 0), 'm', ''],
+    /* 22 */ ['Pendiente del arroyo S', e(c.Sa, 3), 'm/m', ''],
+    /* 23 */ ['Capacidad del canal Q_cap', e(c.Qcap, 3), 'm³/s', 'pestaña Arroyo'],
+    /* 24 */ ['Área de la quebrada A_q', e(c.Aq, 2), 'km²', 'quebrada de montaña que llega al río en la zona alta'],
+    /* 25 */ ['Relieve de la quebrada H', e(c.Hq, 2), 'km', 'del punto más alto a la desembocadura'],
+    /* 26 */ ['Longitud de la quebrada', e(c.Lq, 0), 'm', ''],
+    /* 27 */ ['Pendiente de la quebrada', e(c.Sq, 2), 'm/m', ''],
+    /* 28 */ ['Coeficiente de escorrentía de la quebrada', e(c.Cq, 2), '', ''],
+    /* 29 */ ['Distancia de la quebrada a la bocatoma', e(c.dist, 1), 'km', ''],
+    /* 30 */ ['Velocidad con la que baja la avenida', e(c.v, 1), 'm/s', 'supuesto del modelo'],
+    [sec('Tormenta (Gumbel y Dyck–Peschke)'), sec(''), sec(''), sec('')],
+    /* 32 */ ['Factor de frecuencia K_T', { f: 'IF(B13>1,-SQRT(6)/PI()*(0.5772+LN(LN(B13/(B13-1)))),0)', v: KT, dec: 4 }, '', 'K_T = −(√6/π)·(0.5772 + ln ln(T/(T − 1)))'],
+    /* 33 */ ['Lluvia de 24 h del período T', { f: 'IF(B13>1,B11*(1+B12*B32),0)', v: P24, dec: 2 }, 'mm', 'P24 = M·(1 + c_v·K_T)'],
+    /* 34 */ ['Lluvia de la tormenta P', { f: 'B33*(MIN(B14,1440)/1440)^0.25', v: PD, dec: 2 }, 'mm', 'P = P24·(D/1440)^0.25'],
+    /* 35 */ ['Intensidad media I', { f: 'IF(B14>0,B34/(B14/60),0)', v: I, dec: 2 }, 'mm/h', 'I = P/(D/60)'],
+    [sec('Río: lluvia y caudal (función lineal)'), sec(''), sec(''), sec('')],
+    /* 37 */ ['Caudal por cada mm en 30 días K', { f: 'B7*B6/2592', v: K, dec: 5 }, 'm³/s por mm', 'K = c·A/2592'],
+    /* 38 */ ['Lluvia de la tormenta repartida en la cuenca', { f: 'B34*B15', v: Pt, dec: 2 }, 'mm', 'a·P'],
+    /* 39 */ ['Caudal del río en la bocatoma Q', { f: 'B9*B8+B37*(B10+B38)', v: Q, dec: 4 }, 'm³/s', 'Q = f_sub·Q_sub + K·(P30 + a·P) (sin la represa)'],
+    [sec('Arroyo de la ciudad: método racional'), sec(''), sec(''), sec('')],
+    /* 41 */ ['Tiempo de concentración t_c', { f: '0.0195*B21^0.77*B22^-0.385', v: tcA, dec: 2 }, 'min', 'Kirpich: t_c = 0.0195·L^0.77·S^−0.385'],
+    /* 42 */ ['Intensidad en t_c', { f: 'IF(B14>=B41,B33*(B41/1440)^0.25/(B41/60),B34/(B41/60))', v: iA, dec: 2 }, 'mm/h', 'si la tormenta dura menos que t_c, su lluvia se reparte en t_c'],
+    /* 43 */ ['Crecida del arroyo Q', { f: 'B16*B19*B42*B20/3.6', v: QA, dec: 3 }, 'm³/s', 'Q = C·i·A/3.6'],
+    /* 44 */ ['Uso del canal', { f: 'IF(B23>0,100*B43/B23,0)', v: c.Qcap > 0 ? (100 * QA) / c.Qcap : 0, dec: 1 }, '%', 'más de 100 %: el arroyo se desborda'],
+    [sec('Laderas: deslizamientos (Larsen y Simon, 1993)'), sec(''), sec(''), sec('')],
+    /* 46 */ ['Umbral de lluvia para esta duración', { f: '91.46*(B14/60)^-0.82', v: Iu0, dec: 2 }, 'mm/h', 'I_u = 91.46·D^−0.82 (D en horas)'],
+    /* 47 */ ['Factor por la lluvia de los 30 días anteriores', { f: 'MIN(1.15,MAX(0.6,1-0.4*(B10-75)/175))', v: fAnt, dec: 3 }, '', 'el suelo húmedo baja el umbral (supuesto del modelo)'],
+    /* 48 */ ['Umbral con el suelo de hoy', { f: 'B46*B47', v: Iu0 * fAnt, dec: 2 }, 'mm/h', ''],
+    /* 49 */ ['Lluvia frente al umbral', { f: 'B17*100*B35/B48', v: rD, dec: 1 }, '%', 'desde 70 %: cerca; desde 100 %: se esperan deslizamientos'],
+    [sec('Quebrada de montaña: avenida torrencial'), sec(''), sec(''), sec('')],
+    /* 51 */ ['Índice de Melton R', { f: 'B25/SQRT(B24)', v: melton, dec: 3 }, '', 'R = H/√A'],
+    /* 52 */ ['Lo que puede bajar', { f: 'IF(B51>0.6,"flujo de detritos",IF(B51>=0.3,"avenida de lodo","crecida de agua"))', v: tipo }, '', 'más de 0.6: flujo de detritos; de 0.3 a 0.6: avenida de lodo'],
+    /* 53 */ ['Fracción de sedimento del flujo C_v', { f: 'IF(B51>0.6,0.45,IF(B51>=0.3,0.25,0))', v: Cv, dec: 2 }, '', ''],
+    /* 54 */ ['Tiempo de concentración de la quebrada', { f: '0.0195*B26^0.77*B27^-0.385', v: tcQ, dec: 2 }, 'min', 'Kirpich'],
+    /* 55 */ ['Intensidad en ese tiempo', { f: 'IF(B14>=B54,B33*(B54/1440)^0.25/(B54/60),B34/(B54/60))', v: iQ, dec: 2 }, 'mm/h', ''],
+    /* 56 */ ['Caudal de agua', { f: 'B18*B28*B55*B24/3.6', v: Qagua, dec: 2 }, 'm³/s', 'método racional'],
+    /* 57 */ ['Caudal con lodo, rocas y troncos', { f: 'B56/(1-B53)', v: Qagua / (1 - Cv), dec: 2 }, 'm³/s', 'Q_lodo = Q_agua/(1 − C_v)'],
+    /* 58 */ ['Tiempo para avisar hasta la bocatoma', { f: 'B29*1000/B30/3600', v: (c.dist * 1000) / c.v / 3600, dec: 2 }, 'h', 't = distancia/velocidad'],
+    [],
+    [nota('Ecuaciones de referencia: curva IDF con Gumbel y Dyck y Peschke, método racional con el tiempo de concentración de Kirpich, umbral de deslizamientos de Larsen y Simon (1993) e índice de Melton (Wilford y otros, 2004).')],
+    [nota('La avenida torrencial es probable si llueve en la montaña sobre el umbral de deslizamientos y la quebrada es empinada (Melton ≥ 0.3).')],
+  ];
+  return { nombre: 'Lluvia y desastres', columnas: [46, 16, 12, 56], congelar: { filas: 4 }, horizontal: true, filas };
+}
+
+/** El río mes a mes con el clima del año y la comparación de los tres climas. */
+function hojaLluviaMeses(a) {
+  const meses = a?.meses ?? [];
+  const filas = [
+    [{ v: 'La lluvia y el río mes a mes', estilo: 'titulo' }],
+    [nota(a?.nota ?? 'Caudal de cada mes en la bocatoma (sin la represa).')],
+    [],
+    [enc('Mes'), enc('Lluvia en la ciudad (mm)'), enc('Lluvia en la cuenca, 30 días (mm)'), enc('Caudal (m³/s)'), enc('Cota (m)'), enc('¿Capta la bocatoma?'),
+      enc('Agua sobre la vega (m)'), enc('Caudal en un año normal (m³/s)'), enc('Caudal con El Niño (m³/s)'), enc('Caudal con La Niña (m³/s)')],
+    ...meses.map((m) => [m.mes, num(m.Pciudad, 1), num(m.P30, 1), num(m.Q, 3), num(m.cota, 2), m.capta ? 'Sí' : 'No', num(m.vega, 2),
+      num(m.Qnormal, 3), num(m.Qnino, 3), num(m.Qnina, 3)]),
+  ];
+  if (meses.length) {
+    const n = 4 + meses.length;
+    const prom = (k) => meses.reduce((s, m) => s + m[k], 0) / meses.length;
+    filas.push(['Año', { f: `SUM(B5:B${n})`, v: meses.reduce((s, m) => s + m.Pciudad, 0), dec: 1 }, { f: `SUM(C5:C${n})`, v: meses.reduce((s, m) => s + m.P30, 0), dec: 1 },
+      { f: `AVERAGE(D5:D${n})`, v: prom('Q'), dec: 3 }, null, { f: `COUNTIF(F5:F${n},"Sí")`, v: meses.filter((m) => m.capta).length, dec: 0 }, null,
+      { f: `AVERAGE(H5:H${n})`, v: prom('Qnormal'), dec: 3 }, { f: `AVERAGE(I5:I${n})`, v: prom('Qnino'), dec: 3 }, { f: `AVERAGE(J5:J${n})`, v: prom('Qnina'), dec: 3 }]);
+  } else filas.push([nota('Sin datos de la lluvia.')]);
+  filas.push([], [nota('La fila Año suma la lluvia, promedia los caudales y cuenta los meses en que la bocatoma capta. Cota de la rejilla: 1.75 m; vega del lote: 3.20 m.')]);
+  return { nombre: 'Lluvia mes a mes', columnas: [8, 13, 15, 11, 9, 12, 12, 14, 14, 14], congelar: { filas: 4 }, altos: { 3: 45 }, horizontal: true, filas };
+}
+
 // ── Datos de las hojas de la represa y de la huella (desde los resultados del simulador) ──
 /** Valores de la hoja Represa y energía. */
 export function libroRepresa(p, r) {
@@ -667,24 +781,51 @@ export function libroCultivos(p, r) {
   };
 }
 
+/** Valores de la hoja Lluvia y desastres. */
+export function libroLluvia(p, r) {
+  const l = r.lluvia;
+  const t = l.t;
+  return {
+    clima: l.c.nombre, area: L.CUENCA.area, coef: L.CUENCA.coef, Qsub: l.Qsub, fSub: l.fSub, P30: l.P30, M: l.M, cv: L.IDF.cv,
+    T: t.T, D: t.D, fraccion: t.activa ? t.z.fraccion : 0, zona: t.activa ? t.z.nombre : 'sin tormenta',
+    ciudad: t.activa && t.z.ciudad ? 1 : 0, laderas: t.activa && t.z.laderas.length ? 1 : 0, montana: t.activa && t.z.laderas.includes('alta') ? 1 : 0,
+    Ca: L.ARROYO.C, Aa: L.ARROYO.area, La: L.ARROYO.L, Sa: L.ARROYO.S, Qcap: r.canal ? r.canal.Qcap : 0,
+    Aq: L.QUEBRADA.area, Hq: L.QUEBRADA.relieve, Lq: L.QUEBRADA.L, Sq: L.QUEBRADA.S, Cq: L.QUEBRADA.C,
+    dist: R.KM_BOCATOMA - L.QUEBRADA.km, v: L.VELOCIDAD_AVENIDA,
+  };
+}
+
+/** Valores de la hoja Lluvia mes a mes. */
+export function libroLluviaMeses(p, r) {
+  const l = r.lluvia;
+  const caudales = (id) => L.anoClima(id, H.COTA_VEGA).meses.map((m) => m.Q);
+  const [qn, qo, qa] = ['normal', 'nino', 'nina'].map(caudales);
+  return {
+    nota: `${l.c.nombre}: lluvia de la ciudad (media de Santa Marta 1991–2020, por el clima del año) y de la cuenca, caudal y cota del río en la bocatoma sin la represa; a la derecha, el caudal de cada mes con los tres climas.`,
+    meses: l.ano.meses.map((m, k) => ({ ...m, Qnormal: qn[k], Qnino: qo[k], Qnina: qa[k] })),
+  };
+}
+
 /**
  * Arma las hojas del libro.
  * meta: { fecha, reloj }; resumen: [[etiqueta, valor, unidad, dec]];
  * actual: instantánea { nombre, momento, filas }; ciclo: valores de la hoja Ciclo y costo.
  */
-export function construirHojas({ meta, resumen, actual, registro, ciclo, revision = [], cantidades = [], perfil = null, represa = null, ano = null, huella = null, cultivos = null }) {
+export function construirHojas({ meta, resumen, actual, registro, ciclo, revision = [], cantidades = [], perfil = null, represa = null, ano = null, huella = null, cultivos = null, lluvia = null, lluviaMeses = null }) {
   const contenido = [
     ['Parámetros y resultados', 'Todos los parámetros y resultados: una columna por escenario guardado y la última con el estado al exportar.'],
     ['Serie de tiempo', `Una fila cada ${nombreIntervalo(registro.intervalo)} de tiempo simulado: nivel, bomba, consumo, presiones, energía y costo acumulados.`],
     ['Arranques y paradas', 'Cada vez que la bomba arrancó o se apagó, con el nivel del tanque y la duración del tramo anterior.'],
     ['Ciclo y costo', 'Ciclo de la bomba y costo mensual escritos con fórmulas de Excel que se recalculan.'],
-    ['Revisión del diseño', 'Los criterios de diseño del acueducto, el río, la represa, las bombas, el riego, la huella y el acuífero, con su resultado (cumple, aviso o no cumple).'],
+    ['Revisión del diseño', 'Los criterios de diseño del acueducto, el río, la represa, las bombas, el riego, la huella, el acuífero y la lluvia, con su resultado (cumple, aviso o no cumple).'],
     ['Cantidades de obra', 'Tuberías, accesorios, excavación y cama de apoyo de la red del barrio.'],
     ['Perfil del río', 'Oxígeno disuelto, DBO, coliformes y nitratos cada 0.5 km, del nacimiento a la desembocadura.'],
     ['Represa y energía', 'Embalse, potencia de la central, pérdidas de la línea y costos de operación de la energía y del agua para la ciudad, con fórmulas de Excel.'],
     ['Embalse mes a mes', 'Un año de operación: caudal que entra y que sale, nivel, energía y caudal del río en la bocatoma con la represa y sin ella.'],
     ['Huella hídrica', 'Huella verde, azul y gris del cultivo elegido y la huella de carbono de llevar la cosecha a la ciudad, con fórmulas de Excel.'],
     ['Huella por cultivo', 'Todos los cultivos en la zona elegida y el cultivo elegido en las tres zonas.'],
+    ['Lluvia y desastres', 'La tormenta (curva IDF), el caudal del río por la lluvia, la crecida del arroyo, el umbral de deslizamientos y la avenida torrencial, con fórmulas de Excel.'],
+    ['Lluvia mes a mes', 'La lluvia, el caudal y la cota del río de cada mes con el clima del año, y el caudal con un año normal, El Niño y La Niña.'],
   ];
   return [
     hojaResumen({ meta, resumen, registro, hojas: contenido }),
@@ -699,6 +840,8 @@ export function construirHojas({ meta, resumen, actual, registro, ciclo, revisio
     hojaEmbalseMeses(ano),
     huella ? hojaHuella(huella) : { nombre: 'Huella hídrica', filas: [[nota('Sin datos de la huella.')]] },
     hojaHuellaCultivos(cultivos),
+    lluvia ? hojaLluvia(lluvia) : { nombre: 'Lluvia y desastres', filas: [[nota('Sin datos de la lluvia.')]] },
+    hojaLluviaMeses(lluviaMeses),
   ];
 }
 

@@ -4,11 +4,11 @@ Aplicación web interactiva que simula el abastecimiento de agua de un sector de
 
 La escena muestra el régimen del flujo: en las tuberías las partículas se mueven con el perfil de velocidad (parabólico en laminar, casi plano en turbulento) y un hilo de tinta sigue recto o se mezcla. La pestaña Tuberías incluye una animación del experimento de Reynolds con un tubo de vidrio cuyo diámetro y velocidad se pueden cambiar. La pestaña Datos guarda la información de la simulación en un libro de Excel.
 
-Además del acueducto, el simulador modela la cuenca: el río sube y se enturbia con las lluvias, un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos que siguen río abajo por las zonas alta, media y baja y llegan al acuífero, y en la zona que se elija un cultivo se riega con su propia tubería y su propia bomba. En la zona alta una represa forma un embalse: guarda o suelta agua (y con eso cambia el caudal de las tres zonas), su central produce energía que una línea lleva a la ciudad, y una tubería puede bajar el agua del embalse por gravedad. Se calcula la huella hídrica (verde, azul y gris) de cada cultivo, la huella de carbono de llevar la cosecha a la ciudad y lo que se pierde cuando la creciente del río o el desborde del arroyo inundan el lote. Bajo el valle, en las tres zonas, el agua subterránea se mueve entre el río y el pozo de una finca. Las estaciones de bombeo se diseñan con su potencia hidráulica, al freno y eléctrica, el motor comercial que se instala y el tipo de bomba que conviene.
+Además del acueducto, el simulador modela la cuenca. La lluvia lo mueve todo: la de los últimos 30 días fija el caudal del río y su sedimento, la del año (normal, con El Niño o con La Niña) decide cuánto se riega, cuánta energía da la represa y si la bocatoma se queda sin agua, y una tormenta puede desbordar el arroyo, sacar el río a la vega, mover las laderas o bajar una avenida torrencial por una quebrada; el simulador da el nivel de alerta (verde, amarilla, naranja o roja). El río sube y se enturbia con las lluvias, un vertimiento de aguas residuales le quita oxígeno y le agrega bacterias y nitratos que siguen río abajo por las zonas alta, media y baja y llegan al acuífero, y en la zona que se elija un cultivo se riega con su propia tubería y su propia bomba. En la zona alta una represa forma un embalse: guarda o suelta agua (y con eso cambia el caudal de las tres zonas), su central produce energía que una línea lleva a la ciudad, y una tubería puede bajar el agua del embalse por gravedad. Se calcula la huella hídrica (verde, azul y gris) de cada cultivo, la huella de carbono de llevar la cosecha a la ciudad y lo que se pierde cuando la creciente del río o el desborde del arroyo inundan el lote. Bajo el valle, en las tres zonas, el agua subterránea se mueve entre el río y el pozo de una finca. Las estaciones de bombeo se diseñan con su potencia hidráulica, al freno y eléctrica, el motor comercial que se instala y el tipo de bomba que conviene.
 
 La escena 3D va del nacimiento del río al mar y tiene cinco vistas (Ciudad, Cuenca, Represa, Cultivo y Acuífero); al cambiar de pestaña, la cámara va sola a la vista que corresponde.
 
-El panel tiene trece pestañas, en dos filas: Río, Represa, Captación, Bombas, Tuberías, Tanque, Red, Vivienda, Riego, Huella, Acuífero, Arroyo y Datos.
+El panel tiene catorce pestañas, en dos filas: Lluvia, Río, Represa, Captación, Bombas, Tuberías, Tanque, Red, Vivienda, Riego, Huella, Acuífero, Arroyo y Datos. En la barra de arriba, el primer indicador es el nivel de alerta por la lluvia.
 
 Proyecto final de Álgebra y Geometría Analítica, 2026-II. Línea de investigación: Hidráulica de Canales Abiertos y Redes de Acueducto.
 
@@ -22,6 +22,7 @@ js/escena3d.js        Escena 3D con Three.js
 js/graficas.js        Gráficas con Chart.js
 js/diseno.js          Diseño: catálogo de tuberías, demanda horaria, control de la bomba, golpe de ariete, red ramificada, zanja y cantidades
 js/sistema.js         Une el modelo y el diseño en un solo cálculo del sistema, con la revisión de criterios
+js/lluvia.js          Lluvia: clima del año (El Niño y La Niña), lluvia–caudal, curva IDF, arroyo (método racional), deslizamientos, avenida torrencial, sequía y nivel de alerta
 js/rio.js             Río y cuenca: curva de descarga, sedimentos, vertimientos (mezcla y Streeter-Phelps), infiltración y vulnerabilidad GOD
 js/acuifero.js        Agua subterránea: capas, río que gana o pierde agua (Darcy), cono del pozo (Thiem y Sichardt), tiempo de viaje y calidad del pozo
 js/bombas.js          Estaciones de bombeo: potencias, motor comercial, tipos de bomba, curvas, punto de operación y NPSH
@@ -42,6 +43,7 @@ tests/riego.test.js   Pruebas del riego (Hargreaves, caudal, épocas, métodos, 
 tests/acuifero.test.js Pruebas del agua subterránea (capas, Darcy, Thiem, tiempo de viaje, curva de llegada, tres zonas)
 tests/represa.test.js Pruebas de la represa (embalse, operación, central, línea, límites, año mes a mes, costos)
 tests/huella.test.js  Pruebas de la huella hídrica, del carbono del transporte y de la inundación del lote
+tests/lluvia.test.js  Pruebas de la lluvia (lluvia–caudal, El Niño y La Niña, curva IDF, arroyo, deslizamientos, avenida, alertas)
 ```
 
 Las librerías van incluidas en `lib/` y el Excel se genera con código propio, así que el simulador no depende de ningún CDN.
@@ -91,6 +93,17 @@ El consumo sigue una curva horaria con promedio igual al QMD y pico igual al QMH
 ## Control de la bomba
 
 Dos interruptores de nivel controlan la bomba: se apaga al llegar al nivel de parada y vuelve a arrancar cuando el agua baja al nivel de arranque. `avanzarTanque` integra el nivel por tramos rectos y corta el paso justo en cada interruptor, así que el nivel dibuja un diente de sierra. `cicloBomba` da el tiempo encendida y apagada, las horas de bombeo al día y los arranques por hora. En la escena, una luz verde o roja en la bomba y dos flotadores en el tanque muestran el estado.
+
+## Lluvia y desastres (pestaña Lluvia)
+
+- **Lluvia–caudal** (función lineal): Q = f_sub·Q_sub + K·(P₃₀ + a·P_t), con K = c·A/2592 para una cuenca de 400 km² y c = 0.35 (0.054 m³/s por cada mm caído en 30 días). Con 75 mm en 30 días (900 mm al año) el río lleva los 6.35 m³/s de la condición normal (cota 2.50 m); el resto lo pone el agua subterránea (2.30 m³/s). El estado del río sigue siendo su cota: la lluvia que la explica sale con la ecuación inversa, así que los escenarios de antes dan los mismos resultados.
+- **Clima del año**: con El Niño llueve 40 % menos y el acuífero aporta 25 % menos al río; con La Niña llueve 50 % más. El año mes a mes (régimen bimodal del Caribe, con la lluvia media de Santa Marta de 1991–2020) muestra que con El Niño la bocatoma no capta en febrero y marzo, y que con La Niña el río se sale a la vega de septiembre a noviembre. El clima cambia también el riego (lluvia efectiva), el color de la huella hídrica (más azul con El Niño), la energía de la represa y la recarga del acuífero.
+- **Tormenta** (curva intensidad–duración–frecuencia): lluvia de 24 h con la distribución de Gumbel, P₂₄ = M·(1 + c_v·K_T), y las duraciones cortas con la regla de Dyck y Peschke, P(D) = P₂₄·(D/1440)^0.25. Se elige el período de retorno (2 a 100 años), la duración y dónde cae (toda la cuenca, la montaña, el piedemonte o la ciudad). M = 75 mm y c_v = 0.40 son valores de referencia: se cambian por los de la estación del IDEAM.
+- **Arroyo**: método racional Q = C·i·A/3.6 con el tiempo de concentración de Kirpich; la cuenca urbana es la que da la crecida de diseño del canal (8 m³/s) con la tormenta de 2 años. La de 100 años da 19.31 m³/s y desborda el canal (18.66 m³/s).
+- **Deslizamientos**: umbral de lluvia del trópico húmedo de Larsen y Simon (1993), I = 91.46·D^−0.82, que baja cuando el suelo viene húmedo de los 30 días anteriores.
+- **Avenida torrencial**: una quebrada de montaña de 4.5 km² con índice de Melton 0.68 (flujo de detritos): si la tormenta cae en la montaña por encima del umbral, el lodo, las rocas y los troncos suben el caudal a Q_agua/(1 − C_v), y la onda tarda unas 3 h en llegar a la bocatoma (el tiempo para avisar).
+- **Alerta**: roja si una amenaza ya ocurre (creciente del río sobre la vega, desborde del arroyo, deslizamientos, avenida o sequía en la bocatoma), naranja si es probable (tormenta de 10 años o más, laderas cerca del umbral, año de El Niño o La Niña), amarilla para estar atentos y verde sin amenazas. El mapa de amenazas de la pestaña y la escena 3D muestran dónde está cada una.
+- **Escenarios**: además de los cinco de antes (el aguacero trae ahora una tormenta de 10 años y la creciente extraordinaria, una de 100 años), hay tres nuevos: sequía de El Niño, temporada de lluvias con La Niña y tormenta en la montaña (avenida torrencial).
 
 ## Río y vertimientos (pestaña Río)
 
@@ -164,7 +177,7 @@ Con bombeo continuo la bomba trabaja 24 h y el tanque se mantiene lleno (altura 
 
 ## Pestaña Datos: guardar la simulación en Excel
 
-Mientras corre el reloj se guarda una fila cada 15 minutos de tiempo simulado (se puede cambiar a 5 min, 30 min o 1 h) y cada arranque o parada de la bomba con su instante exacto; la energía se suma tramo por tramo con el área bajo la recta del nivel. «Guardar escenario» copia todos los parámetros y resultados del momento (los escenarios quedan en el navegador aunque se recargue la página). «Descargar Excel (.xlsx)» crea `simulacion-hidrica_AAAA-MM-DD_HH-MM.xlsx` con doce hojas:
+Mientras corre el reloj se guarda una fila cada 15 minutos de tiempo simulado (se puede cambiar a 5 min, 30 min o 1 h) y cada arranque o parada de la bomba con su instante exacto; la energía se suma tramo por tramo con el área bajo la recta del nivel. «Guardar escenario» copia todos los parámetros y resultados del momento (los escenarios quedan en el navegador aunque se recargue la página). «Descargar Excel (.xlsx)» crea `simulacion-hidrica_AAAA-MM-DD_HH-MM.xlsx` con catorce hojas:
 
 | Hoja | Contenido |
 |---|---|
@@ -173,13 +186,15 @@ Mientras corre el reloj se guarda una fila cada 15 minutos de tiempo simulado (s
 | Serie de tiempo | Una fila por intervalo: nivel, bomba, consumo, altura, potencia, presiones, energía y costo acumulados, uso del canal |
 | Arranques y paradas | Cada cambio de la bomba con su hora, el nivel y la duración del tramo anterior |
 | Ciclo y costo | El ciclo de la bomba y el costo mensual con fórmulas de Excel (incluida la eficiencia del motor): si se cambia un dato de entrada (en azul), Excel recalcula |
-| Revisión del diseño | Los criterios de diseño del acueducto, el río, las bombas, el riego, la represa, la huella y el acuífero, con su resultado |
+| Revisión del diseño | Los criterios de diseño del acueducto, el río, las bombas, el riego, la represa, la huella, el acuífero y la lluvia, con su resultado |
 | Cantidades de obra | Tuberías, accesorios, excavación y cama de apoyo de la red |
 | Perfil del río | Oxígeno disuelto, saturación, déficit, DBO, coliformes y nitratos cada 0.5 km, con el vertimiento, la bocatoma y la toma de riego marcados |
 | Represa y energía | Embalse, potencia de la central, pérdidas de la línea y costos de operación de la energía y del agua, con fórmulas de Excel |
 | Embalse mes a mes | Un año de operación: caudal que entra y que sale, nivel, energía y río en la bocatoma con la represa y sin ella |
 | Huella hídrica | Huella verde, azul y gris del cultivo elegido y CO₂ de llevar la cosecha a la ciudad, con fórmulas de Excel |
 | Huella por cultivo | Los once cultivos en la zona elegida y el cultivo elegido en las tres zonas |
+| Lluvia y desastres | Tormenta (Gumbel y Dyck–Peschke), caudal del río por la lluvia, crecida del arroyo, umbral de deslizamientos y avenida torrencial, con fórmulas de Excel |
+| Lluvia mes a mes | Lluvia, caudal y cota del río de cada mes con el clima del año, y el caudal con un año normal, El Niño y La Niña |
 
 Los números se guardan con todos sus decimales; el formato de cada celda solo decide cuántos se ven. Los textos largos (material de una tubería, ecuación de fricción, criterios de diseño) se parten en líneas dentro de su celda, y al imprimir las hojas anchas salen en horizontal, ajustadas al ancho de la página. El archivo se arma en el navegador con `js/excel.js` (sin librerías ni conexión a internet).
 
@@ -230,8 +245,8 @@ y abrir `http://localhost:8000`. Para correr las pruebas (requiere Node.js 18 o 
 npm test
 ```
 
-Son 87 pruebas: 21 del modelo base, 17 del diseño, 6 del archivo de Excel, 9 del río, 6 de las bombas, 6 del riego, 7 del acuífero, 8 de la represa y 7 de la huella.
+Son 98 pruebas: 21 del modelo base, 17 del diseño, 7 del archivo de Excel, 9 del río, 6 de las bombas, 6 del riego, 7 del acuífero, 8 de la represa, 7 de la huella y 10 de la lluvia.
 
 ## Valores de referencia
 
-La tarifa de energía (950 COP/kWh), el cargo fijo, la presión mínima de servicio (15 m.c.a.), la presión estática máxima (60 m.c.a.), los factores k1 y k2, la dotación, las pérdidas técnicas, los límites de velocidad y las dimensiones del catálogo de tuberías son valores editables de referencia. También lo son los del río y el riego: la sección del cauce, las constantes de la DBO y de los coliformes, las concentraciones típicas de cada vertimiento, los suelos y materiales del acuífero, los campos de aplicación de las bombas, las eficiencias de los motores, los K_c de los cultivos y el clima de cada zona. Los de la represa y la huella también: los costos de operación de la central, la línea y la tubería, la forma del valle, los rendimientos, las dosis de nitrógeno y los días que aguanta cada cultivo encharcado. Antes de la sustentación conviene contrastarlos con la tarifa vigente del operador de energía, con el Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017), con las normas de calidad del agua vigentes y con los catálogos de los fabricantes.
+La tarifa de energía (950 COP/kWh), el cargo fijo, la presión mínima de servicio (15 m.c.a.), la presión estática máxima (60 m.c.a.), los factores k1 y k2, la dotación, las pérdidas técnicas, los límites de velocidad y las dimensiones del catálogo de tuberías son valores editables de referencia. También lo son los del río y el riego: la sección del cauce, las constantes de la DBO y de los coliformes, las concentraciones típicas de cada vertimiento, los suelos y materiales del acuífero, los campos de aplicación de las bombas, las eficiencias de los motores, los K_c de los cultivos y el clima de cada zona. Los de la represa y la huella también: los costos de operación de la central, la línea y la tubería, la forma del valle, los rendimientos, las dosis de nitrógeno y los días que aguanta cada cultivo encharcado. Y los de la lluvia: el área y el coeficiente de escorrentía de la cuenca, los factores de El Niño y La Niña, la lluvia máxima diaria promedio y su variación (curva IDF), el factor de la lluvia antecedente, la quebrada de montaña y la velocidad de la avenida; la curva IDF debe reemplazarse por la de la estación del IDEAM más cercana. Antes de la sustentación conviene contrastarlos con la tarifa vigente del operador de energía, con el Reglamento Técnico del Sector de Agua Potable y Saneamiento Básico (RAS, Resolución 0330 de 2017), con las normas de calidad del agua vigentes y con los catálogos de los fabricantes.
